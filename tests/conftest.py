@@ -14,7 +14,7 @@ import hive.core.config as _config_mod
 # these so that the first test that calls get_config() doesn't pollute the rest.
 _DOTENV_VARS = ("HIVE_SECRET", "HIVE_HOST", "HIVE_PORT", "HIVE_DATA_DIR", "HIVE_STATE_DB",
                 "MNEMOSYNE_HOME", "OBSIDIAN_VAULT_PATH", "MINIMAX_API_KEY", "HIVE_GITHUB_TOKEN",
-                "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET")
+                "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "HIVE_APPROVER_KEY")
 
 
 @pytest.fixture(autouse=True)

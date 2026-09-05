@@ -802,6 +802,10 @@ class HiveOS:
               router: ModelRouter | None = None) -> "HiveOS":
         """Construct + wire every subsystem. Inject `router` to bypass the network in tests."""
         cfg = config or HiveConfig.from_env()
+        if cfg.autonomy_enabled and not cfg.approver_key:
+            raise RuntimeError(
+                "HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY to be configured"
+            )
         cfg.ensure_dirs()
         set_config(cfg)                       # make get_config() return the built config (D1)
         credentials.inject()                   # populate env from the 0o600 vault (A4)

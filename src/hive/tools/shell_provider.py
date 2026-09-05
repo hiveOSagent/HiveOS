@@ -10,6 +10,7 @@ network isolation (HIVE_SHELL_PROVIDER=docker, HIVE_SHELL_DOCKER_IMAGE).
 from __future__ import annotations
 
 import asyncio
+import os
 import shlex
 import subprocess
 from abc import ABC, abstractmethod
@@ -20,6 +21,12 @@ from dataclasses import dataclass
 class ShellResult:
     stdout: str
     returncode: int
+
+
+def _without_approver_key(env: dict[str, str] | None) -> dict[str, str]:
+    """Return a child environment that never carries the approver credential."""
+    source = os.environ if env is None else env
+    return {key: value for key, value in source.items() if key != "HIVE_APPROVER_KEY"}
 
 
 class ShellProvider(ABC):
@@ -40,7 +47,7 @@ class LocalShellProvider(ShellProvider):
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            env=env,  # None inherits the current process environment
+            env=_without_approver_key(env),
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return ShellResult(
@@ -63,16 +70,19 @@ class DockerShellProvider(ShellProvider):
 
     async def run(self, cmd: str, *, timeout: float = 30.0,
                   env: dict[str, str] | None = None) -> ShellResult:
-        env_args = " ".join(f"-e {shlex.quote(k + '=' + v)}" for k, v in (env or {}).items())
+        safe_env = _without_approver_key(env)
+        env_args = " ".join(f"-e {shlex.quote(k + '=' + v)}" for k, v in safe_env.items())
         full = (
             f"docker run --rm --network {self._network} "
             f"{env_args} {self._image} sh -c {shlex.quote(cmd)}"
         )
-        proc = await asyncio.create_subprocess_shell(
-            full,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
+        kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT}
+        # Avoid inheriting the approver key into the Docker CLI process.  Keep
+        # the legacy call shape when the parent does not carry the key so
+        # existing provider fakes and callers remain compatible.
+        if "HIVE_APPROVER_KEY" in os.environ:
+            kwargs["env"] = _without_approver_key(None)
+        proc = await asyncio.create_subprocess_shell(full, **kwargs)
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return ShellResult(
             stdout=stdout.decode(errors="replace"),

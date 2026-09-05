@@ -215,6 +215,13 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   any OpenAI SDK client. Constant-time bearer auth (`gateway/auth.py`); typed Pydantic
   boundary (`gateway/protocol.py`) carrying `PROTOCOL_VERSION` on every response
   (additive-first); transport-only channels (`gateway/channels/`). See [`docs/API.md`](API.md) for full reference.
+- **Approval boundary (M0, issue #120):** normal gateway routes use `HIVE_SECRET`, while
+  `POST /approvals/decide` requires the separate `HIVE_APPROVER_KEY` through an isolated
+  FastAPI dependency. When autonomy is enabled, `HiveOS.build()` fails closed if the
+  approver key is empty. Supervised mode temporarily falls back to `HIVE_SECRET` with a
+  warning for backward compatibility. The approver credential is redacted from safe config
+  output and removed from LocalShellProvider, DockerShellProvider, and self-mod child
+  environments.
 - **Hardening (M7):** secrets are masked by `core/redact.py` before hitting the audit
   trail/logs; tools self-report `available()` (unavailable ones are hidden from the model
   and refused by the executor); sessions get an out-of-band aux-model title
@@ -224,7 +231,7 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   effects. Env surface: MiniMax (`MINIMAX_API_KEY`, `*_BASE`, `HIVE_EXEC_MODEL`,
   `HIVE_EXEC_FALLBACK_MODEL`, `HIVE_AUX_MODEL`, `HIVE_REMAINS_URL`), planner
   (`HIVE_PLANNER_*`), budgeter (`HIVE_DAILY_CALL_CAP`, `HIVE_WINDOW_WARN_PCT`), gateway
-  (`HIVE_HOST/PORT/SECRET`), memory (`MNEMOSYNE_HOME`, `MNEMOSYNE_MCP_URL`,
+  (`HIVE_HOST/PORT/SECRET`, `HIVE_APPROVER_KEY`), memory (`MNEMOSYNE_HOME`, `MNEMOSYNE_MCP_URL`,
   `OBSIDIAN_VAULT_PATH`), autonomy (`HIVE_HEARTBEAT_SEC`, `HIVE_MAX_AGENTS`),
   agent limits (`HIVE_MAX_ITERATIONS`, `HIVE_MAX_PER_TOOL`, `HIVE_SELFMOD_THRESHOLD`,
   `HIVE_TOOL_TIMEOUT`), GitHub
@@ -236,7 +243,13 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   (`ProtectSystem=strict`, non-root). See `deploy/README.md`.
 
 ## 11. Tests
-`pytest` (2961 passing; 4 skipped for optional deps; live smokes remain opt-in via `HIVE_LIVE_TEST=1`);
+The M0 verification snapshot on 2026-09-05 recorded `pytest -q` as **4146 passed,
+19 failed, 18 skipped, 12 warnings** on Windows. The M0-focused tests passed (`9 passed`),
+as did the affected gateway/approval/config suites (`367 passed`) and autonomy/runtime
+wiring suites (`204 passed`). The full-suite failures are observed Windows/platform
+assumptions or unrelated baseline tests (Unix `cat`/`bash`/`true`/`printf`, path formatting,
+and unrelated Codex/audit/SOUL checks); they are not used to claim a full-suite pass.
+Live smokes remain opt-in via `HIVE_LIVE_TEST=1`.
 architecture DAG test (`tests/test_architecture.py`) enforces the `core`-is-leaf invariant
 via static AST scan; CI (`.github/workflows/ci.yml`) runs `ruff check` + compile check +
 import smoke + pytest on both 3.11 and 3.12. `ruff` configured in `pyproject.toml`

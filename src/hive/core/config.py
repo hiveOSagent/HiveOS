@@ -143,6 +143,9 @@ class HiveConfig:
     # P0 autonomy gates: both stay opt-in until durable task and approval recovery exist.
     autonomy_enabled: bool = False
     autonomous_selfmod_enabled: bool = False
+    # Out-of-band approval credential (HIVE_APPROVER_KEY).  Kept at the end with
+    # a default so direct test/config construction remains backward-compatible.
+    approver_key: str = ""
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -227,6 +230,7 @@ class HiveConfig:
             stripe_customer_id=os.getenv("STRIPE_CUSTOMER_ID", ""),
             budget_forecast_alert_days=int(os.getenv("HIVE_BUDGET_FORECAST_ALERT_DAYS", "1")),
             budget_daily_spend_cap_usd=float(os.getenv("HIVE_DAILY_SPEND_CAP_USD", "0")),
+            approver_key=os.getenv("HIVE_APPROVER_KEY", ""),
         )
 
     def validate(self) -> list[str]:
@@ -319,6 +323,7 @@ class HiveConfig:
             "host": self.host,
             "port": self.port,
             "secret": _REDACTED,
+            "approver_key": _REDACTED if self.approver_key else "",
             "minimax_api_key": _REDACTED if self.minimax_api_key else "",
             "anthropic_api_key": _REDACTED if self.anthropic_api_key else "",
             "github_token": _REDACTED if self.github_token else "",

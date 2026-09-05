@@ -6,8 +6,12 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **SPRINT_7 Phase B** (cleanup + coverage, branch `sprint7/cleanup-coverage`).
-Test suite: **3907 passing** (4 skipped for optional deps).
+Last reconciled after **M0 issue #120** (out-of-band approver credential, branch
+`codex/m0-security-boundaries`, 2026-09-05).
+Verification snapshot: focused M0 **9 passed**; affected gateway/approval/config suites
+**367 passed**; autonomy/runtime wiring **204 passed**; full `pytest -q` **4146 passed,
+19 failed, 18 skipped, 12 warnings** on Windows. The full-suite failures are documented
+platform/baseline limitations, not an M0 pass claim.
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 
 UI concept branch note (2026-08-22): `gpt-ui-improvements` adds an isolated fixture-only
@@ -73,6 +77,13 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 - **Hardening2 (M7):** secret redaction in audit log; `PROTOCOL_VERSION` on every gateway
   response; `BaseTool.available()` signals hide/refuse unavailable tools; session
   auto-titling via out-of-band aux-model call.
+- **M0 approval boundary (issue #120):** `HIVE_APPROVER_KEY` is loaded into `HiveConfig`
+  and is required for `POST /approvals/decide`; the normal `HIVE_SECRET` receives HTTP 401
+  on that route when an approver key is configured. With autonomy enabled, `HiveOS.build()`
+  fails closed without the key. Supervised mode retains a warning-emitting fallback to
+  `HIVE_SECRET`. The key is redacted from safe config output and removed from shell,
+  Docker, and self-mod child-process environments. Regression coverage is in
+  `tests/test_m0_approver_key.py`.
 - **Providers (M8):** Anthropic + Codex adapters behind `LLMAdapter`; `make_adapter(provider)`
   registry; executor switchable via `HIVE_EXEC_PROVIDER` (minimax|anthropic).
 - **Mission Control visibility (M10-a):** Four authenticated gateway endpoints expose runtime
