@@ -6,10 +6,10 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **M0 issue #120** (out-of-band approver credential, branch
-`codex/m0-security-boundaries`, 2026-09-05).
-Verification snapshot: focused M0 **9 passed**; affected gateway/approval/config suites
-**367 passed**; autonomy/runtime wiring **204 passed**; full `pytest -q` **4146 passed,
+Last reconciled after **M0 issues #120 and #121** (out-of-band approver credential and
+mandatory autonomous self-mod sandbox, branch `codex/m0-selfmod-sandbox`, 2026-09-05).
+Verification snapshot: focused M0 **14 passed**; affected approval/config/autonomy/sandbox
+suites **290 passed**; full `pytest -q` **4151 passed,
 19 failed, 18 skipped, 12 warnings** on Windows. The full-suite failures are documented
 platform/baseline limitations, not an M0 pass claim.
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
@@ -84,6 +84,11 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   `HIVE_SECRET`. The key is redacted from safe config output and removed from shell,
   Docker, and self-mod child-process environments. Regression coverage is in
   `tests/test_m0_approver_key.py`.
+- **M0 autonomous self-mod sandbox (issue #121):** `HiveOS.build()` rejects
+  `HIVE_AUTONOMOUS_SELFMOD_ENABLED=true` without `HIVE_SANDBOX_IMAGE`. With an image,
+  candidate test commands are routed through the no-network Docker sandbox with only the
+  candidate worktree mounted; supervised self-mod remains backward-compatible without an
+  image. Regression coverage is in `tests/test_m0_selfmod_sandbox.py`.
 - **Providers (M8):** Anthropic + Codex adapters behind `LLMAdapter`; `make_adapter(provider)`
   registry; executor switchable via `HIVE_EXEC_PROVIDER` (minimax|anthropic).
 - **Mission Control visibility (M10-a):** Four authenticated gateway endpoints expose runtime

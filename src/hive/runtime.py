@@ -806,6 +806,10 @@ class HiveOS:
             raise RuntimeError(
                 "HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY to be configured"
             )
+        if cfg.autonomous_selfmod_enabled and not cfg.sandbox_image:
+            raise RuntimeError(
+                "HIVE_AUTONOMOUS_SELFMOD_ENABLED=true requires HIVE_SANDBOX_IMAGE to be configured"
+            )
         cfg.ensure_dirs()
         set_config(cfg)                       # make get_config() return the built config (D1)
         credentials.inject()                   # populate env from the 0o600 vault (A4)

@@ -73,7 +73,7 @@ class HiveConfig:
     # Telegram surface (optional)
     telegram_token: str
     telegram_webhook_secret: str
-    # Self-mod sandbox (optional): docker image to run candidate tests in
+    # Self-mod sandbox: optional for supervised changes, mandatory for autonomous self-mod.
     sandbox_image: str
     # MCP stdio servers to load at startup: ';'-separated command lines (A2)
     mcp_servers: tuple[str, ...]
@@ -266,6 +266,10 @@ class HiveConfig:
             issues.append(f"HIVE_SELFMOD_SAFETY_MAX_FILES={self.selfmod_safety_max_files} must be >= 1")
         if self.autonomous_selfmod_enabled and not self.autonomy_enabled:
             issues.append("HIVE_AUTONOMOUS_SELFMOD_ENABLED requires HIVE_AUTONOMY_ENABLED=true")
+        if self.autonomous_selfmod_enabled and not self.sandbox_image:
+            issues.append(
+                "HIVE_AUTONOMOUS_SELFMOD_ENABLED requires HIVE_SANDBOX_IMAGE to be configured"
+            )
         if self.budget_forecast_alert_days < 0:
             issues.append("HIVE_BUDGET_FORECAST_ALERT_DAYS must be >= 0")
         if self.budget_daily_spend_cap_usd < 0:

@@ -215,13 +215,15 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   any OpenAI SDK client. Constant-time bearer auth (`gateway/auth.py`); typed Pydantic
   boundary (`gateway/protocol.py`) carrying `PROTOCOL_VERSION` on every response
   (additive-first); transport-only channels (`gateway/channels/`). See [`docs/API.md`](API.md) for full reference.
-- **Approval boundary (M0, issue #120):** normal gateway routes use `HIVE_SECRET`, while
+- **M0 containment boundaries (issues #120, #121):** normal gateway routes use `HIVE_SECRET`, while
   `POST /approvals/decide` requires the separate `HIVE_APPROVER_KEY` through an isolated
   FastAPI dependency. When autonomy is enabled, `HiveOS.build()` fails closed if the
   approver key is empty. Supervised mode temporarily falls back to `HIVE_SECRET` with a
   warning for backward compatibility. The approver credential is redacted from safe config
   output and removed from LocalShellProvider, DockerShellProvider, and self-mod child
-  environments.
+  environments. Autonomous self-modification additionally requires `HIVE_SANDBOX_IMAGE`;
+  candidate test commands run through Docker with no network and only the candidate worktree
+  mounted. Supervised self-mod remains available without a sandbox image.
 - **Hardening (M7):** secrets are masked by `core/redact.py` before hitting the audit
   trail/logs; tools self-report `available()` (unavailable ones are hidden from the model
   and refused by the executor); sessions get an out-of-band aux-model title
@@ -243,10 +245,10 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   (`ProtectSystem=strict`, non-root). See `deploy/README.md`.
 
 ## 11. Tests
-The M0 verification snapshot on 2026-09-05 recorded `pytest -q` as **4146 passed,
-19 failed, 18 skipped, 12 warnings** on Windows. The M0-focused tests passed (`9 passed`),
-as did the affected gateway/approval/config suites (`367 passed`) and autonomy/runtime
-wiring suites (`204 passed`). The full-suite failures are observed Windows/platform
+The M0 verification snapshot on 2026-09-05 recorded `pytest -q` as **4151 passed,
+19 failed, 18 skipped, 12 warnings** on Windows. The focused M0 #120/#121 tests passed
+(`14 passed`), as did the affected approval/config/autonomy/sandbox suites (`290 passed`).
+The full-suite failures are observed Windows/platform
 assumptions or unrelated baseline tests (Unix `cat`/`bash`/`true`/`printf`, path formatting,
 and unrelated Codex/audit/SOUL checks); they are not used to claim a full-suite pass.
 Live smokes remain opt-in via `HIVE_LIVE_TEST=1`.
@@ -311,10 +313,11 @@ The only cost is the restart-loss caveat (documented in `docs/decisions/005-edit
 failed test leaves the repo in a broken state. A passing test could accidentally commit
 unrelated local changes.
 **Solution:** `core/self_mod.py` uses `git worktree add -b <branch> <tmp_path>`, applies
-the edit there, runs pytest inside the worktree (or inside a Docker container with
-`--network none` if `HIVE_SANDBOX_IMAGE` is set), then pushes the branch and opens a
-draft PR. The live tree is never touched. On failure, the worktree is removed; no branch
-is pushed; the failure goes to memory.
+the edit there, then runs pytest inside the worktree for supervised changes or inside a
+Docker container with `--network none` for autonomous self-modification. Autonomous
+self-modification cannot start unless `HIVE_SANDBOX_IMAGE` is set. The live tree is never
+touched. On failure, the worktree is removed; no branch is pushed; the failure goes to
+memory.
 **Why clever:** Worktrees are a standard git primitive but rarely used for this purpose.
 The result is a self-improving agent that cannot corrupt its own working state.
 
