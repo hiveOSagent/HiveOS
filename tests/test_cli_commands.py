@@ -153,6 +153,12 @@ class TestMainRouting:
             assert cli.main(["logs", "--tail", "abc"]) == 0
             l.assert_called_once_with(20)
 
+    def test_selfmod_history_passes_requested_limit(self):
+        with patch.object(cli, "_run_async", return_value=0) as run_async:
+            assert cli.main(["selfmod-history", "--limit", "7"]) == 0
+        assert run_async.call_args.args[0].cr_frame.f_locals["limit"] == 7
+        run_async.call_args.args[0].close()
+
     def test_doctor_without_fix(self):
         with patch("hive.core.doctor.run", return_value=True) as r:
             assert cli.main(["doctor"]) == 0

@@ -23,7 +23,7 @@ import posixpath
 import subprocess
 import time
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable, Protocol
 
 from hive.core.approval import PROTECTED_PATHS
 from hive.core.events import EventBus, EventType
@@ -35,6 +35,14 @@ log = logging.getLogger("hive.selfmod")
 Runner = Callable[[str | list[str], str | None], Awaitable[tuple[int, str]]]
 # (worktree_path) -> list of changed repo-relative paths
 ApplyFn = Callable[[str], Awaitable[list[str]]]
+
+
+class HistoryStore(Protocol):
+    """Injected durable self-mod history surface (implemented by observability)."""
+
+    def record_selfmod(self, record: dict[str, Any]) -> int: ...
+    def selfmod_history(self, *, limit: int = 20) -> list[dict[str, Any]]: ...
+    def clear_selfmod_history(self) -> int: ...
 
 
 async def _default_run(cmd: str | list[str], cwd: str | None = None) -> tuple[int, str]:
@@ -232,12 +240,13 @@ class SelfModifier:
     def __init__(self, *, repo_root: str = ".", run: Runner | None = None,
                  test_cmd: str = "python -m pytest -q",
                  open_pr: PROpener | None = None,
-                 bus: EventBus | None = None) -> None:
+                 bus: EventBus | None = None, history_store: HistoryStore | None = None) -> None:
         self._root = repo_root
         self._run = run or _default_run
         self._test_cmd = test_cmd
         self._open_pr = open_pr
         self._bus = bus
+        self._history_store = history_store
         self._history: list[dict] = []   # recent proposal outcomes (capped at _MAX_HISTORY)
 
     def _emit(self, event_type: EventType, data: dict) -> None:
@@ -249,17 +258,28 @@ class SelfModifier:
 
     def history(self, limit: int = 20) -> list[dict]:
         """Return the most recent proposal outcomes (newest first), capped to `limit`."""
+        if self._history_store is not None:
+            persisted = self._history_store.selfmod_history(limit=_MAX_HISTORY)
+            # Persisted rows are canonical. Keep only in-memory records whose
+            # ledger write failed, so independent but identical outcomes remain
+            # distinct and immediately visible results remain backwards-compatible.
+            pending = [record for record in self._history if "_ledger_id" not in record]
+            indexed = list(enumerate([*persisted, *reversed(pending)]))
+            indexed.sort(key=lambda item: (float(item[1].get("ts", 0.0)), -item[0]),
+                         reverse=True)
+            return [record for _, record in indexed[:min(max(1, limit), _MAX_HISTORY)]]
         return list(reversed(self._history[-_MAX_HISTORY:]))[:limit]
 
     @property
     def last_result(self) -> dict | None:
         """The outcome dict from the most recent propose() call, or None."""
-        return self._history[-1] if self._history else None
+        history = self.history(limit=1)
+        return history[0] if history else None
 
     def recent_branches(self, n: int = 5) -> list[str]:
         """Return up to n branch names from the most recent successful proposals (newest first)."""
         branches = []
-        for record in reversed(self._history[-_MAX_HISTORY:]):
+        for record in self.history(limit=_MAX_HISTORY):
             if record.get("ok") and record.get("branch"):
                 branches.append(record["branch"])
                 if len(branches) >= n:
@@ -268,24 +288,28 @@ class SelfModifier:
 
     def clear_history(self) -> int:
         """Discard all recorded proposal history. Returns the count cleared."""
+        if self._history_store is not None:
+            self._history = []
+            return self._history_store.clear_selfmod_history()
         count = len(self._history)
         self._history = []
         return count
 
     def proposal_count(self) -> int:
         """Return the total number of proposals recorded in history (capped at _MAX_HISTORY)."""
-        return len(self._history)
+        return len(self.history(limit=_MAX_HISTORY))
 
     def success_rate(self) -> float:
         """Fraction of proposals that succeeded (ok=True). Returns 0.0 if no history."""
-        if not self._history:
+        history = self.history(limit=_MAX_HISTORY)
+        if not history:
             return 0.0
-        ok = sum(1 for r in self._history if r.get("ok"))
-        return round(ok / len(self._history), 4)
+        ok = sum(1 for r in history if r.get("ok"))
+        return round(ok / len(history), 4)
 
     def failed_proposals(self, limit: int = 10) -> list[dict]:
         """Return the most recent failed proposals (ok=False), newest first."""
-        failed = [r for r in reversed(self._history[-_MAX_HISTORY:]) if not r.get("ok")]
+        failed = [r for r in self.history(limit=_MAX_HISTORY) if not r.get("ok")]
         return failed[:max(1, limit)]
 
     def proposals_by_stage(self) -> dict[str, int]:
@@ -294,7 +318,7 @@ class SelfModifier:
         Useful for spotting patterns: if 'test' dominates, the tests are too brittle;
         if 'protected' dominates, the diagnoser keeps targeting locked files."""
         counts: dict[str, int] = {}
-        for r in self._history:
+        for r in self.history(limit=_MAX_HISTORY):
             stage = str(r.get("stage") or "unknown")
             counts[stage] = counts.get(stage, 0) + 1
         return counts
@@ -366,10 +390,17 @@ class SelfModifier:
         # Record in history (trim to _MAX_HISTORY).
         record = {"title": title, "dry_run": dry_run, "ts": time.time(),
                   "ok": result.get("ok"), "stage": result.get("stage"),
-                  "branch": result.get("branch")}
+                  "outcome": result.get("stage"), "branch": result.get("branch"),
+                  "pr_url": result.get("pr_url"),
+                  "tier": "review" if approved_review else "auto"}
         self._history.append(record)
         if len(self._history) > _MAX_HISTORY:
             self._history = self._history[-_MAX_HISTORY:]
+        if self._history_store is not None:
+            try:
+                record["_ledger_id"] = self._history_store.record_selfmod(record)
+            except Exception as exc:  # noqa: BLE001 - history must not alter self-mod outcome
+                log.warning("self_mod: durable history write failed: %s", exc)
         return result
 
     async def propose_approved(self, title: str, description: str, apply_fn: ApplyFn,

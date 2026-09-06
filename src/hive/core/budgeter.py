@@ -63,7 +63,8 @@ class Budgeter:
                  warn_pct: float = 70.0,
                  clock: Callable[[], float] = time.time,
                  history_window: int = 7,
-                 history_path: str | None = None) -> None:
+                 history_path: str | None = None,
+                 initial_usage: Mapping[str, object] | None = None) -> None:
         self._daily_cap = daily_cap
         # A call-count cap and a USD spend cap are different units. 0 means
         # there is no operator-defined USD cap, so forecast status/alerts stay
@@ -87,6 +88,47 @@ class Budgeter:
         self._history_path = history_path
         if history_path:
             self._load_history()
+        if initial_usage:
+            self._hydrate_today(initial_usage)
+
+    def _hydrate_today(self, usage: Mapping[str, object]) -> None:
+        """Restore finalized local-day telemetry after a process restart."""
+        self._calls_today = self._bounded_count(usage.get("inference_calls", 0))
+        cost = float(usage.get("cost_usd", 0.0) or 0.0)
+        self._cost_today_usd = cost if math.isfinite(cost) and cost >= 0.0 else 0.0
+        self._tokens_today = {
+            "input": self._bounded_count(usage.get("input_tokens", 0)),
+            "output": self._bounded_count(usage.get("output_tokens", 0)),
+        }
+        raw_models = usage.get("tokens_by_model", {})
+        raw_costs = usage.get("cost_by_model", {})
+        if not isinstance(raw_models, Mapping) or not isinstance(raw_costs, Mapping):
+            return
+        self._by_model = {
+            str(model): {
+                "input": self._bounded_count((values or {}).get("input", 0)),
+                "output": self._bounded_count((values or {}).get("output", 0)),
+                "cost_usd": self._finite_cost(raw_costs.get(model, 0.0)),
+            }
+            for model, values in raw_models.items()
+            if isinstance(values, Mapping)
+        }
+
+    @staticmethod
+    def _finite_cost(value: object) -> float:
+        try:
+            cost = float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        return cost if math.isfinite(cost) and cost >= 0.0 else 0.0
+
+    @staticmethod
+    def _bounded_count(value: object) -> int:
+        try:
+            count = int(value or 0)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+        return max(0, min(count, 2**63 - 1))
 
     def _today(self) -> str:
         return time.strftime("%Y-%m-%d", time.localtime(self._clock()))

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -66,6 +67,7 @@ from hive.memory.provider import MemoryProvider
 from hive.memory.skill_usage import SkillUsageStore
 from hive.memory.vault import ObsidianVault
 from hive.observability.audit import AuditLog
+from hive.observability.persistence import ObservabilityLedger
 from hive.observability.telemetry import Telemetry
 from hive.observability.traces import TraceCollector
 from hive.tools.base import BaseTool
@@ -131,6 +133,7 @@ class HiveOS:
     orchestrator: ConversationOrchestrator
     budgeter: Budgeter
     telemetry: Telemetry
+    observability_ledger: ObservabilityLedger
     traces: TraceCollector
     audit_log: AuditLog
     skill_usage: SkillUsageStore
@@ -857,6 +860,7 @@ class HiveOS:
             close_resource(self.commitments.close)
             close_resource(self.host_llm.close)
             close_resource(self.audit_log.close)
+            close_resource(self.observability_ledger.close)
         finally:
             self._finish_shutdown()
         if first_error is not None:
@@ -936,14 +940,21 @@ class HiveOS:
         enhance.configure_persistence(str(cfg.state_db))
         events = EventBus()                    # each assembled HiveOS owns its bus (no cross-talk)
 
+        # One append-only ledger is the durable source for telemetry and today's
+        # budget usage. Core receives only a plain aggregate to preserve the DAG.
+        observability_ledger = ObservabilityLedger(cfg.state_db)
+        today_usage = observability_ledger.telemetry_totals(
+            day=time.strftime("%Y-%m-%d", time.localtime())
+        )
         # Budget guard: sync gate for the router; record_call on every successful call.
         budgeter = Budgeter(daily_cap=cfg.daily_call_cap,
                            daily_spend_cap_usd=cfg.budget_daily_spend_cap_usd,
                            warn_pct=cfg.window_warn_pct,
-                           history_path=str(cfg.data_dir / "budget_history.json"))
+                           history_path=str(cfg.data_dir / "budget_history.json"),
+                           initial_usage=today_usage)
         events.subscribe(EventType.INFERENCE_END, budgeter.record_call)
         events.subscribe(EventType.INFERENCE_END, budgeter.record_usage)  # per-token cost
-        telemetry = Telemetry().attach(events)
+        telemetry = Telemetry(ledger=observability_ledger).attach(events)
         traces = TraceCollector().attach(events)
 
         catalog = ModelCatalog()
@@ -1122,7 +1133,7 @@ class HiveOS:
         # With no image this is the plain local runner.
         sandbox_run = make_sandbox_runner(cfg.sandbox_image or None, repo_root=str(cfg.root))
         self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener, run=sandbox_run,
-                                     bus=events)
+                                     bus=events, history_store=observability_ledger)
         edit_pending: dict = {}
         improver = SelfImprovement(
             self_modifier,
@@ -1192,7 +1203,8 @@ class HiveOS:
             config=cfg, events=events, router=router, tools=tools,
             tool_executor=tool_executor, memory=memory, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,
-            budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,
+            budgeter=budgeter, telemetry=telemetry, observability_ledger=observability_ledger,
+            traces=traces, audit_log=audit_log,
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             learned_skills=learned_skills,
             improver=improver, task_board=task_board, cron=cron, commitments=commitments,
