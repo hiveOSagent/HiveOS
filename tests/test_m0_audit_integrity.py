@@ -1,10 +1,13 @@
 """M0 security slice: tamper-evident audit records and approver attribution."""
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
+import pytest
 from starlette.testclient import TestClient
 
 from hive.core.approval_enhancements import enhance
@@ -101,6 +104,63 @@ def test_audit_chain_remains_valid_for_concurrent_records(tmp_path):
         list(pool.map(record, range(64)))
 
     assert audit.verify_integrity() == {"valid": True, "checked": 64, "error": None}
+
+
+def test_audit_readers_wait_for_an_inflight_record(tmp_path, monkeypatch):
+    """Every public reader must share the writer lock and avoid partial rows."""
+    audit = AuditLog(tmp_path / "audit.sqlite")
+    entered = threading.Event()
+    release = threading.Event()
+    original_digest = AuditLog._row_digest
+
+    def slow_digest(**kwargs):
+        entered.set()
+        assert release.wait(timeout=2)
+        return original_digest(**kwargs)
+
+    monkeypatch.setattr(AuditLog, "_row_digest", staticmethod(slow_digest))
+    with ThreadPoolExecutor(max_workers=9) as pool:
+        writer = pool.submit(audit.record, {"tool": "in-flight", "status": "ok"})
+        assert entered.wait(timeout=2)
+        readers = [
+            pool.submit(reader)
+            for reader in (
+                audit.recent, audit.export, audit.stats, audit.search,
+                audit.error_rate, audit.recent_errors,
+                lambda: audit.recent_by_tool("in-flight"), audit.count,
+            )
+        ]
+        assert not any(reader.done() for reader in readers)
+        release.set()
+        writer.result(timeout=2)
+        results = [reader.result(timeout=2) for reader in readers]
+
+    assert results[0][0]["digest"]
+    assert results[6][0]["digest"]
+    assert audit.verify_integrity() == {"valid": True, "checked": 1, "error": None}
+
+
+def test_gateway_lifecycle_rejects_new_acquire_during_final_shutdown(tmp_path):
+    hive = _hive(tmp_path)
+    hive.acquire_gateway_lifespan()
+    assert hive.release_gateway_lifespan() is True
+    assert hive.begin_gateway_shutdown() is True
+    with pytest.raises(RuntimeError, match="shutting down or closed"):
+        hive.acquire_gateway_lifespan()
+
+
+def test_gateway_release_does_not_close_an_injected_runtime(tmp_path):
+    hive = _hive(tmp_path)
+    with TestClient(create_app(hive)) as first:
+        assert first.get("/health").status_code == 200
+    with TestClient(create_app(hive)) as second:
+        assert second.get("/health").status_code == 200
+
+
+def test_runtime_close_is_idempotent(tmp_path):
+    hive = _hive(tmp_path)
+    asyncio.run(hive.aclose())
+    asyncio.run(hive.aclose())
 
 
 def test_audit_chain_serializes_writers_across_instances(tmp_path):

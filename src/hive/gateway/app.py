@@ -72,7 +72,10 @@ def _reject_unallowed_sender(
     return {"ok": True, "handled": False, "reason": reason}
 
 
-def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastAPI:
+def create_app(
+    hive: HiveOS, *, telegram: ChannelAdapter | None = None,
+    close_runtime_on_shutdown: bool = False,
+) -> FastAPI:
     cfg = hive.config
     secret = cfg.secret
     require_token = make_auth_dependency(secret)
@@ -100,9 +103,15 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         try:
             yield
         finally:
-            if hive.release_gateway_lifespan():
-                await hive.aclose()
+            if (
+                close_runtime_on_shutdown
+                and hive.release_gateway_lifespan()
+                and hive.begin_gateway_shutdown()
+            ):
+                await hive.aclose(_gateway_final=True)
                 log.info("HiveOS gateway offline")
+            elif not close_runtime_on_shutdown:
+                hive.release_gateway_lifespan()
 
     app = FastAPI(title="HiveOS Gateway", lifespan=lifespan)
     _cors_origins = [o.strip() for o in cfg.cors_origins.split(",") if o.strip()] if cfg.cors_origins != "*" else ["*"]

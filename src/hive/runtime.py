@@ -153,20 +153,42 @@ class HiveOS:
         default_factory=threading.Lock, init=False, repr=False,
     )
     _gateway_lifespans: int = field(default=0, init=False, repr=False)
+    _gateway_lifecycle_state: str = field(default="open", init=False, repr=False)
 
     def acquire_gateway_lifespan(self) -> None:
         """Mark one FastAPI gateway app as using this shared runtime."""
         with self._gateway_lifecycle_lock:
+            if self._gateway_lifecycle_state != "open":
+                raise RuntimeError("cannot start a gateway on a runtime that is shutting down or closed")
             self._gateway_lifespans += 1
 
     def release_gateway_lifespan(self) -> bool:
-        """Release one gateway app and return whether it owns final shutdown."""
+        """Release one gateway app and report whether no gateway remains."""
         with self._gateway_lifecycle_lock:
             if self._gateway_lifespans <= 0:
                 log.warning("gateway lifespan released without a matching acquire")
                 return False
             self._gateway_lifespans -= 1
             return self._gateway_lifespans == 0
+
+    def begin_gateway_shutdown(self) -> bool:
+        """Atomically claim final shutdown when no gateway lifespan remains."""
+        with self._gateway_lifecycle_lock:
+            if self._gateway_lifecycle_state != "open" or self._gateway_lifespans:
+                return False
+            self._gateway_lifecycle_state = "closing"
+            return True
+
+    def _begin_shutdown(self) -> bool:
+        with self._gateway_lifecycle_lock:
+            if self._gateway_lifecycle_state != "open":
+                return False
+            self._gateway_lifecycle_state = "closing"
+            return True
+
+    def _finish_shutdown(self) -> None:
+        with self._gateway_lifecycle_lock:
+            self._gateway_lifecycle_state = "closed"
 
     async def ask(self, message: str, *, session_id: str = "default",
                   channel_hint: str = "") -> str:
@@ -800,21 +822,25 @@ class HiveOS:
         """Reset the LoopGuard state (call history and per-tool counts)."""
         self.loop_guard.reset()
 
-    async def aclose(self) -> None:
-        close_router = getattr(self.router, "aclose", None)
-        if close_router is not None:
-            await close_router()
-        # Graceful memory shutdown (both provider types expose close/on_session_end).
-        mem_close = getattr(self.memory, "close", None)
-        if mem_close is not None:
-            mem_close()
-        self.session_store.close()
-        self.skill_usage.close()
-        self.task_board.close()
-        self.cron.close()
-        self.commitments.close()
-        self.host_llm.close()      # stop the dedicated host-LLM loop (no-op if unused)
-        self.audit_log.close()
+    async def aclose(self, *, _gateway_final: bool = False) -> None:
+        if not _gateway_final and not self._begin_shutdown():
+            return
+        try:
+            close_router = getattr(self.router, "aclose", None)
+            if close_router is not None:
+                await close_router()
+            mem_close = getattr(self.memory, "close", None)
+            if mem_close is not None:
+                mem_close()
+            self.session_store.close()
+            self.skill_usage.close()
+            self.task_board.close()
+            self.cron.close()
+            self.commitments.close()
+            self.host_llm.close()
+            self.audit_log.close()
+        finally:
+            self._finish_shutdown()
 
     @classmethod
     def build(cls, config: HiveConfig | None = None, *,

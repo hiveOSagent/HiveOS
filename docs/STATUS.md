@@ -118,7 +118,9 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   exposes integrity evidence to the normal token, while audit purge remains approver
   protected. Cross-instance writers serialize through SQLite immediate transactions.
   The chain remains tamper-evident local storage rather than an external immutable
-  anchor against unrestricted database writes.
+  anchor against unrestricted database writes. Audit reads and gateway shutdown
+  serialize with writers; only the `hive serve` gateway owns final shutdown of its
+  shared runtime.
 - **M0 command/file containment (issue #122):** the approval bridge classifies shell
   commands fail-closed, allowing only a small read-only command set and routing
   unknown, malformed, chained, or destructive forms to approval. Protected paths are
