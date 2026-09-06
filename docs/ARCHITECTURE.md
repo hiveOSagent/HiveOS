@@ -257,7 +257,11 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   that do not also rewrite chain metadata are detected by verification. This is
   tamper-evident local storage, not a substitute for an external immutable anchor
   against an attacker with unrestricted SQLite write access. SQLite files receive
-  restrictive owner permissions where the host filesystem supports them.
+  restrictive owner permissions where the host filesystem supports them. Audit reads
+  and gateway shutdown serialize with writers, preventing partially written audit rows
+  and reuse of resources that are closing. Injected `create_app(hive)` instances release
+  their lifespans without owning the shared runtime; the `hive serve` entry point explicitly
+  owns and performs final runtime shutdown.
 - **M0 inbound sender boundary (issue #150):** every enabled inbound channel has two
   checks before a model turn: platform-request authentication and an explicit owner
   allowlist. Telegram requires its Bot API webhook secret plus an allowed user or chat;

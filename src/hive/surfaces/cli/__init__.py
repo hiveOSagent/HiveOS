@@ -272,7 +272,11 @@ def _serve() -> int:
     from hive.runtime import HiveOS
 
     hive = HiveOS.build()
-    uvicorn.run(create_app(hive), host=hive.config.host, port=hive.config.port)
+    uvicorn.run(
+        create_app(hive, close_runtime_on_shutdown=True),
+        host=hive.config.host,
+        port=hive.config.port,
+    )
     return 0
 
 

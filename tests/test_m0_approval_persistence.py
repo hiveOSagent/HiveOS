@@ -101,16 +101,16 @@ def test_runtime_rehydrates_once_and_concurrent_api_decisions_execute_once(tmp_p
 
     restarted.tool_executor.execute_approved = execute_once
 
-    def decide() -> int:
-        with TestClient(create_app(restarted)) as client:
+    with TestClient(create_app(restarted)) as client:
+        def decide() -> int:
             return client.post(
                 "/approvals/decide",
                 json={"approval_id": approval_id, "approved": True},
                 headers={"X-Hive-Token": "change_me"},
             ).status_code
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        statuses = sorted(pool.map(lambda _: decide(), range(2)))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            statuses = sorted(pool.map(lambda _: decide(), range(2)))
 
     assert statuses == [200, 404]
     assert executions == [("read_file", {"path": str(tmp_path / "x")})]

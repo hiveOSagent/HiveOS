@@ -186,11 +186,19 @@ class AuditLog:
         except Exception as exc:  # noqa: BLE001 - broadcaster is best-effort
             log.warning("audit_broadcaster.publish failed: %s", exc)
 
+    def _fetchall(self, sql: str, params: tuple | list = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._db.execute(sql, params).fetchall()
+
+    def _fetchone(self, sql: str, params: tuple | list = ()) -> sqlite3.Row | None:
+        with self._lock:
+            return self._db.execute(sql, params).fetchone()
+
     def recent(self, limit: int = 50) -> list[dict]:
-        rows = self._db.execute(
+        rows = self._fetchall(
             f"SELECT {_AUDIT_COLUMNS} FROM audit_log ORDER BY id DESC LIMIT ?",
             (limit,),
-        ).fetchall()
+        )
         entries = []
         for r in rows:
             entry = dict(r)
@@ -235,13 +243,13 @@ class AuditLog:
                 f"      ORDER BY ts DESC, id DESC LIMIT ?) "
                 f"ORDER BY ts ASC, id ASC"
             )
-            rows = self._db.execute(sql, tuple(params) + (limit,)).fetchall()
+            rows = self._fetchall(sql, tuple(params) + (limit,))
         else:
             sql = (
                 f"SELECT {_AUDIT_COLUMNS} "
                 f"FROM audit_log {where} ORDER BY id"
             )
-            rows = self._db.execute(sql, tuple(params)).fetchall()
+            rows = self._fetchall(sql, tuple(params))
         entries = []
         for r in rows:
             d = dict(r)
@@ -312,16 +320,17 @@ class AuditLog:
 
     def stats(self) -> dict:
         """Return audit summary grouped by tool and status (for dashboard/monitoring)."""
-        by_tool = {}
-        rows = self._db.execute(
-            "SELECT tool, status, COUNT(*) AS n FROM audit_log GROUP BY tool, status"
-        ).fetchall()
-        for r in rows:
-            tool_entry = by_tool.setdefault(r["tool"], {"total": 0, "by_status": {}})
-            tool_entry["total"] += r["n"]
-            tool_entry["by_status"][r["status"]] = r["n"]
-        total_row = self._db.execute("SELECT COUNT(*) AS n FROM audit_log").fetchone()
-        return {"total": int(total_row["n"]), "by_tool": by_tool}
+        with self._lock:
+            by_tool = {}
+            rows = self._db.execute(
+                "SELECT tool, status, COUNT(*) AS n FROM audit_log GROUP BY tool, status"
+            ).fetchall()
+            for r in rows:
+                tool_entry = by_tool.setdefault(r["tool"], {"total": 0, "by_status": {}})
+                tool_entry["total"] += r["n"]
+                tool_entry["by_status"][r["status"]] = r["n"]
+            total_row = self._db.execute("SELECT COUNT(*) AS n FROM audit_log").fetchone()
+            return {"total": int(total_row["n"]), "by_tool": by_tool}
 
     def search(self, *, tool: str | None = None, status: str | None = None,
                limit: int = 50) -> list[dict]:
@@ -335,11 +344,11 @@ class AuditLog:
             params.append(status)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(min(limit, 500))
-        rows = self._db.execute(
+        rows = self._fetchall(
             f"SELECT {_AUDIT_COLUMNS} "
             f"FROM audit_log {where} ORDER BY id DESC LIMIT ?",
             params,
-        ).fetchall()
+        )
         entries = []
         for r in rows:
             d = dict(r)
@@ -354,27 +363,28 @@ class AuditLog:
         """Return the fraction of audit entries that are errors in the recent window.
 
         Returns a float in [0.0, 1.0]; 0.0 if no entries in window."""
-        cutoff = self._clock() - window_hours * 3600
-        row_total = self._db.execute(
-            "SELECT COUNT(*) AS n FROM audit_log WHERE ts >= ?", (cutoff,)
-        ).fetchone()
-        total = int(row_total["n"]) if row_total else 0
-        if total == 0:
-            return 0.0
-        row_errors = self._db.execute(
-            "SELECT COUNT(*) AS n FROM audit_log WHERE ts >= ? AND status != 'ok'",
-            (cutoff,)
-        ).fetchone()
-        errors = int(row_errors["n"]) if row_errors else 0
-        return round(errors / total, 4)
+        with self._lock:
+            cutoff = self._clock() - window_hours * 3600
+            row_total = self._db.execute(
+                "SELECT COUNT(*) AS n FROM audit_log WHERE ts >= ?", (cutoff,)
+            ).fetchone()
+            total = int(row_total["n"]) if row_total else 0
+            if total == 0:
+                return 0.0
+            row_errors = self._db.execute(
+                "SELECT COUNT(*) AS n FROM audit_log WHERE ts >= ? AND status != 'ok'",
+                (cutoff,),
+            ).fetchone()
+            errors = int(row_errors["n"]) if row_errors else 0
+            return round(errors / total, 4)
 
     def recent_errors(self, limit: int = 20) -> list[dict]:
         """Return the most recent failed/error audit entries (status != 'ok'), newest first."""
-        rows = self._db.execute(
+        rows = self._fetchall(
             f"SELECT {_AUDIT_COLUMNS} "
             "FROM audit_log WHERE status != 'ok' ORDER BY id DESC LIMIT ?",
             (min(limit, 200),),
-        ).fetchall()
+        )
         entries = []
         for r in rows:
             d = dict(r)
@@ -387,11 +397,11 @@ class AuditLog:
 
     def recent_by_tool(self, tool: str, limit: int = 20) -> list[dict]:
         """Return the most recent audit entries for a specific tool (newest first)."""
-        rows = self._db.execute(
+        rows = self._fetchall(
             f"SELECT {_AUDIT_COLUMNS} "
             "FROM audit_log WHERE tool=? ORDER BY id DESC LIMIT ?",
             (tool, min(limit, 200)),
-        ).fetchall()
+        )
         entries = []
         for r in rows:
             d = dict(r)
@@ -419,7 +429,7 @@ class AuditLog:
 
     def count(self) -> int:
         """Return the total number of audit entries."""
-        row = self._db.execute("SELECT COUNT(*) FROM audit_log").fetchone()
+        row = self._fetchone("SELECT COUNT(*) FROM audit_log")
         return int(row[0]) if row else 0
 
     def clear(self) -> None:

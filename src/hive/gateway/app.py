@@ -72,7 +72,10 @@ def _reject_unallowed_sender(
     return {"ok": True, "handled": False, "reason": reason}
 
 
-def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastAPI:
+def create_app(
+    hive: HiveOS, *, telegram: ChannelAdapter | None = None,
+    close_runtime_on_shutdown: bool = False,
+) -> FastAPI:
     cfg = hive.config
     secret = cfg.secret
     require_token = make_auth_dependency(secret)
@@ -95,13 +98,15 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         hive.acquire_gateway_lifespan()
-        await hive.load_mcp_servers()   # connect configured MCP servers (best-effort, A2)
-        log.info("HiveOS gateway online")
         try:
+            await hive.load_mcp_servers()   # connect configured MCP servers (best-effort, A2)
+            log.info("HiveOS gateway online")
             yield
         finally:
-            if hive.release_gateway_lifespan():
-                await hive.aclose()
+            if hive.release_gateway_lifespan(
+                claim_final_shutdown=close_runtime_on_shutdown,
+            ):
+                await hive.aclose(_gateway_final=True)
                 log.info("HiveOS gateway offline")
 
     app = FastAPI(title="HiveOS Gateway", lifespan=lifespan)

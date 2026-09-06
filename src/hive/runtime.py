@@ -153,20 +153,39 @@ class HiveOS:
         default_factory=threading.Lock, init=False, repr=False,
     )
     _gateway_lifespans: int = field(default=0, init=False, repr=False)
+    _gateway_lifecycle_state: str = field(default="open", init=False, repr=False)
 
     def acquire_gateway_lifespan(self) -> None:
         """Mark one FastAPI gateway app as using this shared runtime."""
         with self._gateway_lifecycle_lock:
+            if self._gateway_lifecycle_state != "open":
+                raise RuntimeError("cannot start a gateway on a runtime that is shutting down or closed")
             self._gateway_lifespans += 1
 
-    def release_gateway_lifespan(self) -> bool:
-        """Release one gateway app and return whether it owns final shutdown."""
+    def release_gateway_lifespan(self, *, claim_final_shutdown: bool = False) -> bool:
+        """Release one gateway app and atomically claim final shutdown when requested."""
         with self._gateway_lifecycle_lock:
             if self._gateway_lifespans <= 0:
                 log.warning("gateway lifespan released without a matching acquire")
                 return False
             self._gateway_lifespans -= 1
-            return self._gateway_lifespans == 0
+            if self._gateway_lifespans or not claim_final_shutdown:
+                return False
+            if self._gateway_lifecycle_state != "open":
+                return False
+            self._gateway_lifecycle_state = "closing"
+            return True
+
+    def _begin_shutdown(self) -> bool:
+        with self._gateway_lifecycle_lock:
+            if self._gateway_lifecycle_state != "open":
+                return False
+            self._gateway_lifecycle_state = "closing"
+            return True
+
+    def _finish_shutdown(self) -> None:
+        with self._gateway_lifecycle_lock:
+            self._gateway_lifecycle_state = "closed"
 
     async def ask(self, message: str, *, session_id: str = "default",
                   channel_hint: str = "") -> str:
@@ -800,21 +819,40 @@ class HiveOS:
         """Reset the LoopGuard state (call history and per-tool counts)."""
         self.loop_guard.reset()
 
-    async def aclose(self) -> None:
-        close_router = getattr(self.router, "aclose", None)
-        if close_router is not None:
-            await close_router()
-        # Graceful memory shutdown (both provider types expose close/on_session_end).
-        mem_close = getattr(self.memory, "close", None)
-        if mem_close is not None:
-            mem_close()
-        self.session_store.close()
-        self.skill_usage.close()
-        self.task_board.close()
-        self.cron.close()
-        self.commitments.close()
-        self.host_llm.close()      # stop the dedicated host-LLM loop (no-op if unused)
-        self.audit_log.close()
+    async def aclose(self, *, _gateway_final: bool = False) -> None:
+        if not _gateway_final and not self._begin_shutdown():
+            return
+        first_error: Exception | None = None
+
+        def close_resource(close) -> None:
+            nonlocal first_error
+            try:
+                close()
+            except Exception as exc:  # noqa: BLE001 - shutdown must continue
+                if first_error is None:
+                    first_error = exc
+
+        try:
+            close_router = getattr(self.router, "aclose", None)
+            if close_router is not None:
+                try:
+                    await close_router()
+                except Exception as exc:  # noqa: BLE001 - shutdown must continue
+                    first_error = exc
+            mem_close = getattr(self.memory, "close", None)
+            if mem_close is not None:
+                close_resource(mem_close)
+            close_resource(self.session_store.close)
+            close_resource(self.skill_usage.close)
+            close_resource(self.task_board.close)
+            close_resource(self.cron.close)
+            close_resource(self.commitments.close)
+            close_resource(self.host_llm.close)
+            close_resource(self.audit_log.close)
+        finally:
+            self._finish_shutdown()
+        if first_error is not None:
+            raise first_error
 
     @classmethod
     def build(cls, config: HiveConfig | None = None, *,
