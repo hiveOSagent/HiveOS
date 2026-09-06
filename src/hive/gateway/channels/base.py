@@ -38,6 +38,7 @@ class OutgoingMessage:
     chat_id: str
     text: str
     reply_to: str | None = None
+    reply_markup: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)

@@ -39,7 +39,7 @@ ApplyFn = Callable[[str], Awaitable[list[str]]]
 
 async def _default_run(cmd: str | list[str], cwd: str | None = None) -> tuple[int, str]:
     child_env = {key: value for key, value in os.environ.items()
-                 if key != "HIVE_APPROVER_KEY"}
+                 if key not in {"HIVE_APPROVER_KEY", "HIVE_TELEGRAM_APPROVAL_SIGNING_KEY"}}
     if isinstance(cmd, list):
         # Use exec (no shell interpretation) for commands with LLM-sourced arguments.
         proc = await asyncio.create_subprocess_exec(

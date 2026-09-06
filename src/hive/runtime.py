@@ -50,6 +50,7 @@ from hive.core.learning import (
 from hive.core.sandbox import make_sandbox_runner
 from hive.core.self_mod import SelfModifier, github_pr_opener
 from hive.core.spec_search import Edit, EditOutcome, SelfImprovement
+from hive.core.telegram_approvals import TelegramApprovalVerifier
 from hive.core.types import Message, Role
 from hive.llm.adapters import make_adapter
 from hive.llm.credential_pool import CredentialPool
@@ -149,6 +150,7 @@ class HiveOS:
     edit_pending: dict    # approval_id → Edit; REVIEW-tier edits awaiting human approval
     host_llm: HostLLMBridge
     loop_guard: LoopGuard
+    telegram_approval_verifier: TelegramApprovalVerifier | None
     _gateway_lifecycle_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False,
     )
@@ -865,6 +867,10 @@ class HiveOS:
               router: ModelRouter | None = None) -> "HiveOS":
         """Construct + wire every subsystem. Inject `router` to bypass the network in tests."""
         cfg = config or HiveConfig.from_env()
+        # This key belongs only to the Telegram approval verifier.  Consume it
+        # before any agent component is constructed so it cannot be inherited
+        # by agent logic or child processes.
+        telegram_approval_verifier = TelegramApprovalVerifier.from_environment(cfg.state_db)
         if cfg.production_mode and (not cfg.secret.strip() or cfg.secret == "change_me"):
             raise RuntimeError(
                 "HIVE_PRODUCTION=true requires a non-empty HIVE_SECRET different from 'change_me'"
@@ -872,6 +878,11 @@ class HiveOS:
         if cfg.autonomy_enabled and not cfg.approver_key:
             raise RuntimeError(
                 "HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY to be configured"
+            )
+        if cfg.production_mode and cfg.telegram_token and telegram_approval_verifier is None:
+            raise RuntimeError(
+                "HIVE_PRODUCTION=true with TELEGRAM_BOT_TOKEN requires "
+                "HIVE_TELEGRAM_APPROVAL_SIGNING_KEY to be configured"
             )
         if cfg.telegram_token and not cfg.telegram_webhook_secret:
             raise RuntimeError(
@@ -903,6 +914,10 @@ class HiveOS:
         cfg.ensure_dirs()
         set_config(cfg)                       # make get_config() return the built config (D1)
         credentials.inject()                   # populate env from the 0o600 vault (A4)
+        # A credential vault must not be able to reintroduce the gateway-only
+        # key into the assembled agent process after the verifier consumed it.
+        import os
+        os.environ.pop("HIVE_TELEGRAM_APPROVAL_SIGNING_KEY", None)
         # The global operational wrapper owns only state around the immutable gate.
         # Binding it here makes restart rehydration use the assembled runtime's DB.
         from hive.core.approval_enhancements import enhance
@@ -1170,6 +1185,7 @@ class HiveOS:
             board=board,
             host_llm=host_llm,
             loop_guard=LoopGuard(max_per_tool=cfg.max_per_tool),
+            telegram_approval_verifier=telegram_approval_verifier,
             learning_tracer=learning_tracer,
             learning_evaluator=learning_evaluator,
             learning_evolver=learning_evolver,
