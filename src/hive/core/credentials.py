@@ -1,20 +1,29 @@
-"""
-credentials.py — local credential store with strict perms + env injection.
+"""Credential storage backed by the operating system's secret service.
 
-Ported from OpenJarvis core/credentials.py (docs/references/OPENJARVIS_REFERENCE.md
-§3.1). Stores secrets in a 0o600 JSON file under the data dir; `inject()` loads
-them into os.environ before provider calls. Secrets never live in code or config.
+Only a 0o600 manifest of credential names is kept under Hive's data directory.
+Values live in the platform keyring, so a readable project/data directory no
+longer exposes credentials.  Existing plaintext ``credentials.json`` stores are
+migrated atomically on their first successful access; if no safe keyring backend
+is available, the migration fails closed and leaves the legacy file untouched.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 from hive.core import config
 
 log = logging.getLogger("hive.credentials")
+_MANIFEST_VERSION = 2
+_SERVICE_PREFIX = "HiveOS.credentials"
+
+
+class CredentialStoreError(RuntimeError):
+    """Raised when the OS credential backend cannot safely store a secret."""
 
 
 def _path() -> Path:
@@ -23,27 +32,134 @@ def _path() -> Path:
     return config.get_config().data_dir / "credentials.json"
 
 
-def _load() -> dict[str, str]:
+def _service_name() -> str:
+    """Scope secrets to this HiveOS root without revealing the local path."""
+    root = str(config.get_config().root.resolve()).encode("utf-8")
+    return f"{_SERVICE_PREFIX}.{hashlib.sha256(root).hexdigest()[:16]}"
+
+
+def _keyring() -> Any:
+    """Return the configured OS keyring or fail closed with a useful error."""
+    try:
+        import keyring
+    except ImportError as exc:  # pragma: no cover - dependency is declared
+        raise CredentialStoreError("keyring dependency is unavailable") from exc
+    backend = keyring.get_keyring()
+    backend_module = type(backend).__module__
+    if backend_module.startswith("keyring.backends.fail"):
+        raise CredentialStoreError(
+            "no secure OS credential backend is configured; refusing plaintext credential storage"
+        )
+    return keyring
+
+
+def _read_raw() -> dict[str, Any]:
     path = _path()
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
-        log.warning("credentials read failed: %s", exc)
+        log.warning("credential manifest read failed: %s", exc)
         return {}
+    return value if isinstance(value, dict) else {}
 
 
-def save(key: str, value: str) -> None:
+def _manifest_keys(raw: dict[str, Any]) -> list[str] | None:
+    if raw.get("version") != _MANIFEST_VERSION:
+        return None
+    keys = raw.get("keys")
+    if not isinstance(keys, list) or any(not isinstance(key, str) or not key for key in keys):
+        log.warning("credential manifest has an invalid key list")
+        return []
+    return list(dict.fromkeys(keys))
+
+
+def _legacy_values(raw: dict[str, Any]) -> dict[str, str]:
+    """Return a valid legacy plaintext payload, excluding manifest-like data."""
+    if not raw or "version" in raw or any(not isinstance(key, str) or not isinstance(value, str)
+                                           for key, value in raw.items()):
+        return {}
+    return dict(raw)
+
+
+def _write_manifest(keys: list[str]) -> None:
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = _load()
-    data[key] = value
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    manifest = {"version": _MANIFEST_VERSION, "keys": sorted(set(keys))}
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    try:
+        os.chmod(temporary, 0o600)
+    except OSError:  # pragma: no cover - non-POSIX
+        pass
+    os.replace(temporary, path)
     try:
         os.chmod(path, 0o600)
     except OSError:  # pragma: no cover - non-POSIX
         pass
+
+
+def _migrate_legacy(values: dict[str, str]) -> dict[str, str]:
+    """Move legacy plaintext values to the OS keyring before replacing the file."""
+    keyring = _keyring()
+    try:
+        for key, value in values.items():
+            keyring.set_password(_service_name(), key, value)
+    except Exception as exc:  # noqa: BLE001 - backend exceptions vary by OS
+        raise CredentialStoreError("credential migration to the OS keyring failed") from exc
+    _write_manifest(list(values))
+    return values
+
+
+def _load() -> dict[str, str]:
+    """Load values from keyring, migrating an old plaintext vault if necessary."""
+    raw = _read_raw()
+    keys = _manifest_keys(raw)
+    if keys is None:
+        legacy = _legacy_values(raw)
+        return _migrate_legacy(legacy) if legacy else {}
+    keyring = _keyring()
+    values: dict[str, str] = {}
+    try:
+        for key in keys:
+            value = keyring.get_password(_service_name(), key)
+            if value is not None:
+                values[key] = value
+    except Exception as exc:  # noqa: BLE001 - backend exceptions vary by OS
+        raise CredentialStoreError("credential read from the OS keyring failed") from exc
+    return values
+
+
+def save(key: str, value: str) -> None:
+    if not isinstance(key, str) or not key:
+        raise ValueError("credential key must be a non-empty string")
+    if not isinstance(value, str):
+        raise TypeError("credential value must be a string")
+    # Load first so an old plaintext file is migrated before its manifest is
+    # updated.  This preserves every existing credential during an overwrite.
+    _load()
+    existing_keys = _manifest_keys(_read_raw()) or []
+    keyring = _keyring()
+    try:
+        keyring.set_password(_service_name(), key, value)
+    except Exception as exc:  # noqa: BLE001 - backend exceptions vary by OS
+        raise CredentialStoreError("credential write to the OS keyring failed") from exc
+    _write_manifest(existing_keys + [key])
+
+
+def delete(key: str) -> bool:
+    """Delete one stored credential and remove its name from the local manifest."""
+    keys = _manifest_keys(_read_raw()) or []
+    if key not in keys:
+        return False
+    keyring = _keyring()
+    try:
+        keyring.delete_password(_service_name(), key)
+    except Exception as exc:  # noqa: BLE001 - backend exceptions vary by OS
+        raise CredentialStoreError("credential deletion from the OS keyring failed") from exc
+    _write_manifest([existing for existing in keys if existing != key])
+    return True
 
 
 def get(key: str, default: str | None = None) -> str | None:

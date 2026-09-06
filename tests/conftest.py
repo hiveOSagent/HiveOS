@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import os
 
+import keyring
 import pytest
+from keyring.backend import KeyringBackend
 
 from hive.core.approval import gate as _approval_gate
 from hive.core.approval_enhancements import enhance as _approval_enhance
@@ -18,6 +20,24 @@ _DOTENV_VARS = ("HIVE_SECRET", "HIVE_PRODUCTION", "HIVE_HOST", "HIVE_PORT", "HIV
                 "HIVE_TELEGRAM_ALLOWED_USER_IDS", "HIVE_TELEGRAM_ALLOWED_CHAT_IDS",
                 "HIVE_SLACK_ALLOWED_USER_IDS", "HIVE_DISCORD_ALLOWED_USER_IDS",
                 "HIVE_EMAIL_ALLOWED_SENDERS")
+
+
+class _TestKeyring(KeyringBackend):
+    """In-memory OS-keyring seam for deterministic credential-store tests."""
+
+    priority = 1
+
+    def __init__(self) -> None:
+        self._values: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self._values.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self._values[(service, username)] = password
+
+    def delete_password(self, service: str, username: str) -> None:
+        self._values.pop((service, username), None)
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +58,8 @@ def _reset_globals():
     """
     saved_config = _config_mod._CONFIG
     saved_env = {k: os.environ.get(k) for k in _DOTENV_VARS}
+    saved_keyring = keyring.get_keyring()
+    keyring.set_keyring(_TestKeyring())
     _approval_gate._pending.clear()
     _approval_enhance.configure_persistence(None)
     _approval_enhance.release_kill_switch(released_by="pytest fixture")
@@ -56,3 +78,4 @@ def _reset_globals():
             os.environ.pop(k, None)
         else:
             os.environ[k] = v
+    keyring.set_keyring(saved_keyring)

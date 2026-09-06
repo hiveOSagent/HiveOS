@@ -150,7 +150,9 @@ to run fully offline (all tests do). Wiring highlights:
 Each store self-initializes its schema (WAL). `core/doctor.py` verifies the DB is
 present/openable; it does **not** duplicate store DDL (avoids drift — fixed in #14).
 Named file artifacts (allowed): Obsidian vault notes (`memory/vault.py`), curator
-backups (`data/backups/skills`), the 0o600 credential vault (`core/credentials.py`).
+backups (`data/backups/skills`), and a 0o600 credential-name manifest
+(`core/credentials.py`). Credential values are stored in the OS keyring; legacy
+plaintext vaults migrate only after the keyring write succeeds.
 
 ## 6. EventBus (`core/events.py`)
 Thread-safe synchronous pub/sub; subscribers run in registration order, isolated from
@@ -249,6 +251,12 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   from executing one rehydrated approval twice. The heartbeat records its
   failure-triggered self-modification cooldown before invoking the diagnoser, so a
   process restart cannot bypass that throttle.
+- **M0 secret-exfiltration boundary (issue #148):** sensitive files
+  (`data/credentials.json`, `.env*`, private-key files, and SSH material) are denied
+  for tool reads even after approval. Credential values reside in the OS keyring rather
+  than the repository-readable manifest. Tool output and audit callback payloads are
+  redacted before they can reach model context or audit consumers, and outbound
+  `web_get` URLs containing configured secret values are refused.
 - **M0 audit integrity boundary:** audit rows carry redacted arguments, actor/principal
   attribution, and a SHA-256 hash chain persisted in `audit_meta`. `GET /audit/verify`
   exposes integrity evidence to the normal gateway token, while destructive
@@ -320,7 +328,8 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   `HIVE_TOOL_TIMEOUT`), GitHub
   (`HIVE_GITHUB_*`), Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`), sandbox
   (`HIVE_SANDBOX_IMAGE`), MCP (`HIVE_MCP_SERVERS`). Pricing overrides via
-  `HIVE_PRICE_<MODEL>_{IN,OUT}`. Secrets may live in the 0o600 vault (`credentials.save`).
+  `HIVE_PRICE_<MODEL>_{IN,OUT}`. Secrets may live in the OS keyring, with only their
+  names recorded in the 0o600 credential manifest (`credentials.save`).
 - **Deploy** (`deploy/`): systemd `hiveos-gateway` (`hive serve`), `hiveos-orchestrator`
   (`hive heartbeat`), `hiveos-keeper.{service,timer}` (`hive consolidate`), hardened
   (`ProtectSystem=strict`, non-root). See `deploy/README.md`.

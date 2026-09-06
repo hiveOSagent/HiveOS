@@ -24,6 +24,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from hive.core import approval
 from hive.core.events import EventBus, EventType
+from hive.core.redact import contains_known_secret, redact_known_secrets
 from hive.core.types import ToolResult
 from hive.tools.base import BaseTool
 from hive.tools.file_safety import check_path
@@ -34,6 +35,8 @@ class _GateLike(Protocol):
     def request(self, name: str, args: dict, reason: str) -> object: ...
 
 log = logging.getLogger("hive.tools.executor")
+
+_READ_ONLY_TOOLS = frozenset({"read_file"})
 
 AuditSink = Callable[[dict[str, Any]], None]
 
@@ -128,10 +131,15 @@ class ToolExecutor:
             return self._finish(name, args, ToolDispatch(
                 DispatchStatus.ERROR, error=f"tool unavailable: {name}"))
 
-        # Reject writes targeting sensitive paths before touching the gate.
+        if name == "web_get" and contains_known_secret(str(args.get("url", ""))):
+            return self._finish(name, args, ToolDispatch(
+                DispatchStatus.ERROR, error="outbound URL contains a configured secret"))
+
+        # Reject sensitive paths before touching the gate.  Reads are not made
+        # safe by a human approval: a tool must never expose secret material.
+        operation = "read" if name in _READ_ONLY_TOOLS else "write"
         for param in ("path", "file", "filename", "destination"):
             if param in args:
-                operation = "read" if name == "read_file" and param == "path" else "write"
                 safety_err = check_path(str(args[param]), operation=operation)
                 if safety_err:
                     return self._finish(name, args, ToolDispatch(
@@ -180,10 +188,13 @@ class ToolExecutor:
         if not tool.available():
             return self._finish(name, args, ToolDispatch(
                 DispatchStatus.ERROR, error=f"tool unavailable: {name}"))
+        if name == "web_get" and contains_known_secret(str(args.get("url", ""))):
+            return self._finish(name, args, ToolDispatch(
+                DispatchStatus.ERROR, error="outbound URL contains a configured secret"), approved=True)
         # Recheck path safety even after approval — approval proves intent, not safety.
+        operation = "read" if name in _READ_ONLY_TOOLS else "write"
         for param in ("path", "file", "filename", "destination"):
             if param in args:
-                operation = "read" if name == "read_file" and param == "path" else "write"
                 safety_err = check_path(str(args[param]), operation=operation)
                 if safety_err:
                     return self._finish(name, args, ToolDispatch(
@@ -211,14 +222,21 @@ class ToolExecutor:
         except Exception as exc:  # noqa: BLE001 - surfaced as a structured error
             log.warning("tool %s failed: %s", tool.spec.name, exc)
             return ToolDispatch(DispatchStatus.ERROR, error=str(exc))
+        result.content = redact_known_secrets(result.content)
         return ToolDispatch(DispatchStatus.OK, result=result)
 
     def _finish(self, name: str, args: dict[str, Any], dispatch: ToolDispatch,
                 *, approved: bool = False) -> ToolDispatch:
+        if dispatch.error:
+            dispatch.error = redact_known_secrets(dispatch.error)
         if self._audit is not None:
             try:
                 self._audit({"tool": name, "args": args, "status": dispatch.status.value,
-                             "approved": approved, "error": dispatch.error})
+                             "approved": approved,
+                             "error": dispatch.error or "",
+                             "result": redact_known_secrets(
+                                 dispatch.result.content if dispatch.result else ""
+                             )})
             except Exception as exc:  # noqa: BLE001
                 log.warning("audit write failed for tool %s: %s", name, exc)
         if dispatch.status is not DispatchStatus.PENDING:

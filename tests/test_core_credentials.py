@@ -27,7 +27,8 @@ def test_save_persists_to_json_file(tmp_path):
     _cfg(tmp_path)
     credentials.save("TOKEN", "tok-xyz")
     raw = json.loads(credentials._path().read_text(encoding="utf-8"))
-    assert raw["TOKEN"] == "tok-xyz"
+    assert raw == {"version": 2, "keys": ["TOKEN"]}
+    assert "tok-xyz" not in credentials._path().read_text(encoding="utf-8")
 
 
 def test_save_multiple_keys(tmp_path):
@@ -137,17 +138,12 @@ def test_credential_store_missing_key_returns_none(tmp_path):
 
 
 def test_credential_store_delete_removes_key(tmp_path):
-    """Manually removing a key from the JSON file makes get() return None."""
+    """Deleting a key removes its keyring value and manifest entry."""
     _cfg(tmp_path)
     credentials.save("DELETE_ME", "gone")
     assert credentials.get("DELETE_ME") == "gone"
 
-    # Simulate deletion by rewriting the JSON without that key
-    path = credentials._path()
-    data = json.loads(path.read_text(encoding="utf-8"))
-    del data["DELETE_ME"]
-    path.write_text(json.dumps(data), encoding="utf-8")
-
+    assert credentials.delete("DELETE_ME") is True
     os.environ.pop("DELETE_ME", None)
     assert credentials.get("DELETE_ME") is None
 
@@ -186,13 +182,13 @@ def test_credential_store_empty_initially(tmp_path):
 # Six additional tests
 # ---------------------------------------------------------------------------
 
-def test_save_stores_value_as_string_in_json(tmp_path):
-    """save() writes the value as a plain JSON string, not nested object."""
+def test_save_keeps_value_out_of_json_manifest(tmp_path):
+    """save() writes only a key manifest; values stay in the OS keyring."""
     _cfg(tmp_path)
     credentials.save("STRING_VAL_KEY", "plain_string")
     raw = json.loads(credentials._path().read_text(encoding="utf-8"))
-    assert isinstance(raw["STRING_VAL_KEY"], str)
-    assert raw["STRING_VAL_KEY"] == "plain_string"
+    assert raw["keys"] == ["STRING_VAL_KEY"]
+    assert "plain_string" not in credentials._path().read_text(encoding="utf-8")
 
 
 def test_get_custom_default_returned_when_absent(tmp_path):
@@ -417,14 +413,16 @@ def test_wave3x_multiple_keys_stored_independently(tmp_path):
         assert data[k] == v, f"key {k!r} mismatch"
 
 
-def test_wave3x_overwrite_updates_json_on_disk(tmp_path):
-    """After overwriting a key, the JSON file on disk reflects only the new value."""
+def test_wave3x_overwrite_keeps_values_out_of_manifest(tmp_path):
+    """Overwriting leaves the manifest value-free and updates the keyring value."""
     _cfg(tmp_path)
     credentials.save("OW_KEY", "original")
     credentials.save("OW_KEY", "replaced")
     raw = json.loads(credentials._path().read_text(encoding="utf-8"))
-    assert raw["OW_KEY"] == "replaced"
-    assert list(raw.values()).count("original") == 0
+    assert raw["keys"] == ["OW_KEY"]
+    assert "original" not in credentials._path().read_text(encoding="utf-8")
+    assert "replaced" not in credentials._path().read_text(encoding="utf-8")
+    assert credentials.get("OW_KEY") == "replaced"
 
 
 def test_wave3x_very_long_value_round_trips(tmp_path):
@@ -457,15 +455,11 @@ def test_wave3x_get_env_fallback_when_absent_from_vault(tmp_path, monkeypatch):
     assert credentials.get("WAVE3X_ENV_ONLY") == "from-env"
 
 
-def test_wave3x_delete_via_json_rewrite_makes_get_return_none(tmp_path, monkeypatch):
-    """Removing a key from the JSON file and env makes get() return None."""
+def test_wave3x_delete_makes_get_return_none(tmp_path, monkeypatch):
+    """Deleting a key from the OS store and env makes get() return None."""
     _cfg(tmp_path)
     credentials.save("DEL_VIA_JSON", "to-delete")
-    # Rewrite JSON without the key (simulates external deletion).
-    path = credentials._path()
-    data = json.loads(path.read_text(encoding="utf-8"))
-    del data["DEL_VIA_JSON"]
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    assert credentials.delete("DEL_VIA_JSON") is True
     monkeypatch.delenv("DEL_VIA_JSON", raising=False)
     assert credentials.get("DEL_VIA_JSON") is None
 
@@ -592,13 +586,52 @@ def test_wave4i_inject_values_are_strings(tmp_path, monkeypatch):
     assert isinstance(os.environ["STR_CHECK_KEY"], str)
 
 
-def test_wave4i_key_casing_preserved_in_json(tmp_path):
-    """The JSON file preserves the exact casing of keys as supplied to save()."""
+def test_wave4i_key_casing_preserved_in_manifest(tmp_path):
+    """The manifest preserves the exact casing of each credential name."""
     _cfg(tmp_path)
     credentials.save("camelCaseKey", "v")
     raw = json.loads(credentials._path().read_text(encoding="utf-8"))
-    assert "camelCaseKey" in raw
-    assert "camelcasekey" not in raw
+    assert "camelCaseKey" in raw["keys"]
+    assert "camelcasekey" not in raw["keys"]
+
+
+def test_legacy_plaintext_vault_migrates_to_keyring_manifest(tmp_path):
+    """The first read migrates legacy values without leaving plaintext on disk."""
+    _cfg(tmp_path)
+    credentials._path().parent.mkdir(parents=True, exist_ok=True)
+    credentials._path().write_text('{"LEGACY_TOKEN": "legacy-secret-value"}', encoding="utf-8")
+
+    assert credentials.get("LEGACY_TOKEN") == "legacy-secret-value"
+    manifest_text = credentials._path().read_text(encoding="utf-8")
+    assert "legacy-secret-value" not in manifest_text
+    assert json.loads(manifest_text) == {"version": 2, "keys": ["LEGACY_TOKEN"]}
+
+
+def test_keyring_failure_does_not_create_plaintext_vault(tmp_path, monkeypatch):
+    _cfg(tmp_path)
+
+    def unavailable():
+        raise credentials.CredentialStoreError("test backend unavailable")
+
+    monkeypatch.setattr(credentials, "_keyring", unavailable)
+    with pytest.raises(credentials.CredentialStoreError, match="unavailable"):
+        credentials.save("NO_FALLBACK", "synthetic-secret-value")
+    assert not credentials._path().exists()
+
+
+def test_failed_legacy_migration_preserves_plaintext_until_safe(tmp_path, monkeypatch):
+    _cfg(tmp_path)
+    legacy = '{"LEGACY_TOKEN": "synthetic-legacy-secret"}'
+    credentials._path().parent.mkdir(parents=True, exist_ok=True)
+    credentials._path().write_text(legacy, encoding="utf-8")
+
+    def unavailable():
+        raise credentials.CredentialStoreError("test backend unavailable")
+
+    monkeypatch.setattr(credentials, "_keyring", unavailable)
+    with pytest.raises(credentials.CredentialStoreError, match="unavailable"):
+        credentials.get("LEGACY_TOKEN")
+    assert credentials._path().read_text(encoding="utf-8") == legacy
 
 
 def test_wave4i_load_result_is_independent_copy(tmp_path):

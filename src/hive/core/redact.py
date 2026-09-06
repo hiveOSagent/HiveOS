@@ -10,6 +10,7 @@ DAG: core leaf (stdlib only).
 """
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -37,6 +38,45 @@ _PRIVATE_KEY_RE = re.compile(
 _MASK = "***REDACTED***"
 
 
+def _is_sensitive_name(name: str) -> bool:
+    """Return whether an environment or structured field name holds a secret."""
+    normalized = name.lower().replace("-", "_")
+    return (
+        normalized in _SENSITIVE_KEYS
+        or normalized.endswith("_key")
+        or any(marker in normalized for marker in (
+            "api_key", "apikey", "token", "secret", "password", "passwd",
+            "credential", "authorization", "private_key",
+        ))
+    )
+
+
+def known_secret_values(env: dict[str, str] | None = None) -> frozenset[str]:
+    """Return configured secret values for output redaction and egress checks.
+
+    Values are intentionally never logged.  The caller receives only a set used
+    for exact replacement or containment checks.
+    """
+    source = os.environ if env is None else env
+    return frozenset(
+        value for key, value in source.items()
+        if _is_sensitive_name(str(key)) and isinstance(value, str) and value
+    )
+
+
+def contains_known_secret(text: str, *, env: dict[str, str] | None = None) -> bool:
+    """Return whether text contains any configured secret value."""
+    return any(value in text for value in known_secret_values(env))
+
+
+def redact_known_secrets(text: str, *, env: dict[str, str] | None = None) -> str:
+    """Redact known configured values as well as recognizable secret shapes."""
+    redacted = redact_text(text)
+    for value in sorted(known_secret_values(env), key=len, reverse=True):
+        redacted = redacted.replace(value, _MASK)
+    return redacted
+
+
 def mask_secret(token: str) -> str:
     """Fully mask short tokens; keep first6…last4 of long ones for debuggability."""
     if len(token) < 18:
@@ -59,12 +99,12 @@ def redact_text(text: str) -> str:
 def redact_value(value: Any, *, key: str = "", _depth: int = 0) -> Any:
     """Recursively redact a value. A sensitive KEY masks the whole value; strings
     are scrubbed for secret shapes; dicts/lists recurse (max depth 50)."""
-    if key and key.lower().replace("-", "_") in _SENSITIVE_KEYS:
+    if key and _is_sensitive_name(key):
         return _MASK if value not in (None, "", [], {}) else value
     if _depth >= 50:
         return value
     if isinstance(value, str):
-        return redact_text(value)
+        return redact_known_secrets(value)
     if isinstance(value, dict):
         return {k: redact_value(v, key=str(k), _depth=_depth + 1) for k, v in value.items()}
     if isinstance(value, list):

@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from hive.core.redact import redact_args
+from hive.core.redact import redact_args, redact_known_secrets
 
 log = logging.getLogger("hive.observability.audit")
 _AUDIT_COLUMNS = (
@@ -154,14 +154,16 @@ class AuditLog:
                     "INSERT INTO audit_log(ts, tool, status, approved, error, args, actor, principal, "
                     "prev_digest, digest) VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (ts, entry.get("tool", ""), entry.get("status", ""),
-                     1 if entry.get("approved") else 0, entry.get("error"),
+                     1 if entry.get("approved") else 0,
+                     redact_known_secrets(str(entry.get("error") or "")),
                      json.dumps(redacted_args, default=str), actor, principal, previous, ""),
                 )
                 row_id = int(self._db.execute("SELECT last_insert_rowid()").fetchone()[0])
                 digest = self._row_digest(
                     row_id=row_id, ts=ts, tool=str(entry.get("tool", "")),
                     status=str(entry.get("status", "")), approved=bool(entry.get("approved")),
-                    error=entry.get("error"), args=json.dumps(redacted_args, default=str),
+                    error=redact_known_secrets(str(entry.get("error") or "")),
+                    args=json.dumps(redacted_args, default=str),
                     actor=actor, principal=principal, prev_digest=previous,
                 )
                 self._db.execute("UPDATE audit_log SET digest=? WHERE id=?", (digest, row_id))
