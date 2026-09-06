@@ -28,6 +28,7 @@ log = logging.getLogger("hive.observability.audit")
 _AUDIT_COLUMNS = (
     "id, ts, tool, status, approved, error, args, actor, principal, prev_digest, digest"
 )
+_CHAIN_VERSION = "1"
 
 
 class AuditLog:
@@ -39,6 +40,7 @@ class AuditLog:
         self._db.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._db.execute("PRAGMA journal_mode=WAL")  # shared state DB: reduce writer lock contention
+        self._db.execute("PRAGMA busy_timeout=5000")
         self._clock = clock
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS audit_log("
@@ -69,6 +71,8 @@ class AuditLog:
                 self._db.execute(f"ALTER TABLE audit_log ADD COLUMN {name} {definition}")
 
     def _migrate_chain_if_needed(self) -> None:
+        if self._meta("chain_version"):
+            return
         row = self._db.execute(
             "SELECT COUNT(*) AS n FROM audit_log WHERE digest IS NULL OR digest = ''"
         ).fetchone()
@@ -80,6 +84,7 @@ class AuditLog:
             ).fetchone()
             self._set_meta("chain_head", head["digest"] if head else "")
             self._set_meta("chain_anchor", "")
+        self._set_meta("chain_version", _CHAIN_VERSION)
 
     def _rebuild_chain(self) -> None:
         previous = ""
@@ -138,28 +143,33 @@ class AuditLog:
 
     def record(self, entry: dict[str, Any]) -> None:
         with self._lock:
-            ts = self._clock()
-            redacted_args = redact_args(entry.get("args", {}))  # B2: redact secrets
-            actor = str(entry.get("actor") or "agent")
-            principal = str(entry.get("principal") or actor)
-            previous = self._meta("chain_head")
-            self._db.execute(
-                "INSERT INTO audit_log(ts, tool, status, approved, error, args, actor, principal, "
-                "prev_digest, digest) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (ts, entry.get("tool", ""), entry.get("status", ""),
-                 1 if entry.get("approved") else 0, entry.get("error"),
-                 json.dumps(redacted_args, default=str), actor, principal, previous, ""),
-            )
-            row_id = int(self._db.execute("SELECT last_insert_rowid()").fetchone()[0])
-            digest = self._row_digest(
-                row_id=row_id, ts=ts, tool=str(entry.get("tool", "")),
-                status=str(entry.get("status", "")), approved=bool(entry.get("approved")),
-                error=entry.get("error"), args=json.dumps(redacted_args, default=str),
-                actor=actor, principal=principal, prev_digest=previous,
-            )
-            self._db.execute("UPDATE audit_log SET digest=? WHERE id=?", (digest, row_id))
-            self._set_meta("chain_head", digest)
-            self._db.commit()
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                ts = self._clock()
+                redacted_args = redact_args(entry.get("args", {}))  # B2: redact secrets
+                actor = str(entry.get("actor") or "agent")
+                principal = str(entry.get("principal") or actor)
+                previous = self._meta("chain_head")
+                self._db.execute(
+                    "INSERT INTO audit_log(ts, tool, status, approved, error, args, actor, principal, "
+                    "prev_digest, digest) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (ts, entry.get("tool", ""), entry.get("status", ""),
+                     1 if entry.get("approved") else 0, entry.get("error"),
+                     json.dumps(redacted_args, default=str), actor, principal, previous, ""),
+                )
+                row_id = int(self._db.execute("SELECT last_insert_rowid()").fetchone()[0])
+                digest = self._row_digest(
+                    row_id=row_id, ts=ts, tool=str(entry.get("tool", "")),
+                    status=str(entry.get("status", "")), approved=bool(entry.get("approved")),
+                    error=entry.get("error"), args=json.dumps(redacted_args, default=str),
+                    actor=actor, principal=principal, prev_digest=previous,
+                )
+                self._db.execute("UPDATE audit_log SET digest=? WHERE id=?", (digest, row_id))
+                self._set_meta("chain_head", digest)
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
             self.prune()
         # SPRINT_7 Batch E: publish to real-time subscribers. The broadcaster is
         # best-effort; failures here must not break audit. Wrap in try/except so
@@ -281,18 +291,23 @@ class AuditLog:
     def prune(self, max_rows: int | None = None) -> int:
         """Delete oldest entries beyond max_rows. Returns count deleted."""
         with self._lock:
-            limit = max_rows if max_rows is not None else self._max_rows
-            cur = self._db.execute(
-                "DELETE FROM audit_log WHERE id NOT IN "
-                "(SELECT id FROM audit_log ORDER BY id DESC LIMIT ?)",
-                (limit,),
-            )
-            if cur.rowcount:
-                # Retention is an explicit, local operation. Re-seal the retained
-                # segment so routine pruning does not create a false alarm while
-                # unsanctioned UPDATE/DELETE operations still break the chain.
-                self._rebuild_chain()
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                limit = max_rows if max_rows is not None else self._max_rows
+                cur = self._db.execute(
+                    "DELETE FROM audit_log WHERE id NOT IN "
+                    "(SELECT id FROM audit_log ORDER BY id DESC LIMIT ?)",
+                    (limit,),
+                )
+                if cur.rowcount:
+                    # Retention is an explicit, local operation. Re-seal the retained
+                    # segment so routine pruning does not create a false alarm while
+                    # unsanctioned UPDATE/DELETE operations still break the chain.
+                    self._rebuild_chain()
                 self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
             return cur.rowcount
 
     def stats(self) -> dict:
@@ -390,11 +405,16 @@ class AuditLog:
     def purge_old(self, max_age_days: float = 90.0) -> int:
         """Delete audit entries older than max_age_days. Returns count deleted."""
         with self._lock:
-            cutoff = self._clock() - max_age_days * 86_400
-            cur = self._db.execute("DELETE FROM audit_log WHERE ts <= ?", (cutoff,))
-            if cur.rowcount:
-                self._rebuild_chain()
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                cutoff = self._clock() - max_age_days * 86_400
+                cur = self._db.execute("DELETE FROM audit_log WHERE ts <= ?", (cutoff,))
+                if cur.rowcount:
+                    self._rebuild_chain()
                 self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
             return cur.rowcount
 
     def count(self) -> int:
@@ -405,10 +425,15 @@ class AuditLog:
     def clear(self) -> None:
         """Remove all audit entries from the database."""
         with self._lock:
-            self._db.execute("DELETE FROM audit_log")
-            self._set_meta("chain_anchor", "")
-            self._set_meta("chain_head", "")
-            self._db.commit()
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._db.execute("DELETE FROM audit_log")
+                self._set_meta("chain_anchor", "")
+                self._set_meta("chain_head", "")
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
 
     def close(self) -> None:
         with self._lock:

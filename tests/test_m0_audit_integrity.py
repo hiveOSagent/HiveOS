@@ -62,6 +62,20 @@ def test_audit_chain_detects_manual_update(tmp_path):
     assert "digest" in check["error"]
 
 
+def test_audit_chain_does_not_reseal_blank_digest_after_restart(tmp_path):
+    path = tmp_path / "audit.sqlite"
+    audit = AuditLog(path)
+    audit.record({"tool": "first", "status": "ok"})
+    audit.close()
+
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE audit_log SET status='tampered', digest='' WHERE id=1")
+
+    check = AuditLog(path).verify_integrity()
+    assert check["valid"] is False
+    assert "digest" in check["error"]
+
+
 def test_audit_chain_detects_manual_deletion(tmp_path):
     path = tmp_path / "audit.sqlite"
     audit = AuditLog(path)
@@ -87,6 +101,23 @@ def test_audit_chain_remains_valid_for_concurrent_records(tmp_path):
         list(pool.map(record, range(64)))
 
     assert audit.verify_integrity() == {"valid": True, "checked": 64, "error": None}
+
+
+def test_audit_chain_serializes_writers_across_instances(tmp_path):
+    path = tmp_path / "audit.sqlite"
+    audits = [AuditLog(path), AuditLog(path)]
+
+    def record(index: int) -> None:
+        audits[index % 2].record({"tool": f"tool-{index}", "status": "ok"})
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(record, range(32)))
+
+    assert AuditLog(path).verify_integrity() == {
+        "valid": True, "checked": 32, "error": None,
+    }
+    for audit in audits:
+        audit.close()
 
 
 def test_audit_verify_endpoint_requires_normal_agent_token(tmp_path):
