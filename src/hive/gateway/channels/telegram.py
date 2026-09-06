@@ -58,6 +58,8 @@ class TelegramChannel(ChannelAdapter):
         payload: dict[str, Any] = {"chat_id": message.chat_id, "text": message.text}
         if message.reply_to:
             payload["reply_to_message_id"] = message.reply_to
+        if message.reply_markup:
+            payload["reply_markup"] = message.reply_markup
         try:
             r = await self._client.post(f"{self._base}/sendMessage", json=payload)
             data = r.json()
@@ -67,6 +69,18 @@ class TelegramChannel(ChannelAdapter):
         if not data.get("ok"):
             return SendResult(ok=False, error=str(data.get("description", "send failed")))
         return SendResult(ok=True, message_id=str(data.get("result", {}).get("message_id", "")))
+
+    async def answer_callback(self, callback_query_id: str, text: str) -> bool:
+        """Acknowledge an inline-button press promptly, as Telegram requires."""
+        try:
+            response = await self._client.post(
+                f"{self._base}/answerCallbackQuery",
+                json={"callback_query_id": callback_query_id, "text": text[:200]},
+            )
+            return bool(response.json().get("ok"))
+        except Exception as exc:  # noqa: BLE001 - callback acknowledgement is best-effort
+            log.warning("telegram callback acknowledgement failed: %s", exc)
+            return False
 
     async def aclose(self) -> None:
         await self._client.aclose()

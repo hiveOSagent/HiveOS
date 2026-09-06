@@ -238,6 +238,16 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   self-modification additionally requires `HIVE_SANDBOX_IMAGE`;
   candidate test commands run through Docker with no network and only the candidate worktree
   mounted. Supervised self-mod remains available without a sandbox image.
+- **M0 Telegram approval boundary (issue #145):** production Telegram deployments require
+  `HIVE_TELEGRAM_APPROVAL_SIGNING_KEY`, which is consumed by the dedicated callback verifier
+  before the agent runtime is assembled and removed from the process environment. It is not a
+  `HiveConfig` field and is filtered from shell, Docker, and self-modification child processes.
+  Each pending approval emits compact Telegram inline approve/reject buttons. Their callback
+  tokens are HMAC-signed, bound to the approval id and decision, SQLite-backed, TTL-bounded,
+  and atomically consumed, so expired or replayed callbacks fail closed. The webhook accepts a
+  decision only from `HIVE_TELEGRAM_ALLOWED_USER_IDS` (chat allowlists are insufficient for
+  approval) and records the Telegram user id as the approval principal. The existing
+  `HIVE_APPROVER_KEY` endpoint remains the break-glass path.
 - **M0 command/file containment (issue #122):** the file safety boundary denies
   reads and writes anywhere below the repository's .git/ and .github/workflows/
   trees with normalized, path-boundary-aware matching. Exact protected files remain
@@ -326,7 +336,8 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   `OBSIDIAN_VAULT_PATH`), autonomy (`HIVE_HEARTBEAT_SEC`, `HIVE_MAX_AGENTS`),
   agent limits (`HIVE_MAX_ITERATIONS`, `HIVE_MAX_PER_TOOL`, `HIVE_SELFMOD_THRESHOLD`,
   `HIVE_TOOL_TIMEOUT`), GitHub
-  (`HIVE_GITHUB_*`), Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`), sandbox
+  (`HIVE_GITHUB_*`), Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`,
+  `HIVE_TELEGRAM_APPROVAL_SIGNING_KEY`), sandbox
   (`HIVE_SANDBOX_IMAGE`), MCP (`HIVE_MCP_SERVERS`). Pricing overrides via
   `HIVE_PRICE_<MODEL>_{IN,OUT}`. Secrets may live in the OS keyring, with only their
   names recorded in the 0o600 credential manifest (`credentials.save`).

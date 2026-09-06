@@ -6,17 +6,14 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **M0 issues #120-#123 and #143** (out-of-band approver
-credential, mandatory autonomous self-mod sandbox, command/file containment,
-durable approval/cooldown state, and executable behavioral regressions, branch
-`codex/m0-behavioral-regressions-next`, 2026-09-06).
-Verification snapshot: the new #143 harness passes **11 tests**; the affected
-M0/tool/self-mod suites report **269 passed, 2 skipped, 2 known Windows baseline
-failures**. The fresh full `pytest -q` run reports **4273 passed, 18 failed,
-18 skipped, 12 warnings** on Windows. The full-suite failures are outside the
-changed files and are known platform/baseline limitations (Unix `cat`/`bash`/
-`true`/`printf`, path/CRLF formatting, and existing adapter/bridge checks); this
-is not presented as a full-suite pass claim.
+Last reconciled after **M0 issues #120-#123, #143, and #145** (out-of-band
+approver credential, mandatory autonomous self-mod sandbox, command/file
+containment, durable approval/cooldown state, behavioral regressions, and signed
+Telegram approval callbacks), 2026-09-06. The focused #145 approval suites last ran
+with **35 passed, 1 warning**. The broader affected gateway/runtime/approval/shell/self-mod
+run reported **541 passed, 10 failed, 3 warnings**; every failure was a pre-existing Windows
+assumption about Unix commands or shell syntax (`bash`, `true`, `printf`, `$VAR`). These are
+reported as platform baselines rather than full-suite pass claims.
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 
 UI concept branch note (2026-08-22): `gpt-ui-improvements` adds an isolated fixture-only
@@ -91,6 +88,17 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   inherit host environment variables by default; only explicitly supplied,
   non-approver values are forwarded. Regression coverage is in
   `tests/test_m0_approver_key.py`.
+- **M0 Telegram approval boundary (issue #145):** pending approvals are delivered to
+  configured Telegram recipients as inline approve/reject buttons. Callback data uses a
+  compact HMAC token mapped durably to its approval id, decision, expiry, and consumed
+  state; a replay, malformed callback, or expired token is refused. The signing secret is
+  read once from `HIVE_TELEGRAM_APPROVAL_SIGNING_KEY` by the verifier, removed before the
+  agent runtime is assembled, never placed in `HiveConfig`, and filtered from all child
+  process environments. Only `HIVE_TELEGRAM_ALLOWED_USER_IDS` may approve through the
+  callback path; chat allowlists may receive notices but cannot authorize decisions. In
+  production with Telegram enabled, startup fails closed without the signing secret.
+  `HIVE_APPROVER_KEY` remains the HTTP break-glass path. Regression coverage is in
+  `tests/test_m0_telegram_approvals.py`.
 - **M0 autonomous self-mod sandbox (issue #121):** `HiveOS.build()` rejects
   `HIVE_AUTONOMOUS_SELFMOD_ENABLED=true` without `HIVE_SANDBOX_IMAGE`. With an image,
   candidate test commands are routed through the no-network Docker sandbox with only the

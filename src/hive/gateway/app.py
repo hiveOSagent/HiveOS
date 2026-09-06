@@ -33,6 +33,7 @@ from fastapi.responses import StreamingResponse
 
 from hive.core.approval import gate
 from hive.core.approval_enhancements import DecisionOutcome, enhance
+from hive.core.events import EventType
 from hive.gateway.auth import make_approver_dependency, make_auth_dependency, token_ok
 from hive.gateway.channels.base import ChannelAdapter, MessageEvent, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
@@ -94,6 +95,109 @@ def create_app(
     # Telegram surface (optional): use an injected channel, else build one from config.
     if telegram is None and hive.config.telegram_token:
         telegram = TelegramChannel(hive.config.telegram_token)
+
+    callback_verifier = hive.telegram_approval_verifier
+
+    def _callback_event(update: dict) -> tuple[str, str, str] | None:
+        """Extract callback id, sender id and compact data without invoking the agent."""
+        query = update.get("callback_query")
+        if not isinstance(query, dict):
+            return None
+        callback_id = query.get("id")
+        data = query.get("data")
+        sender = query.get("from") or {}
+        user_id = sender.get("id") if isinstance(sender, dict) else None
+        if not callback_id or not data or user_id is None:
+            return None
+        return str(callback_id), str(user_id), str(data)
+
+    async def _answer_telegram_callback(callback_id: str, text: str) -> None:
+        answer = getattr(telegram, "answer_callback", None)
+        if answer is None:
+            return
+        try:
+            await answer(callback_id, text)
+        except Exception as exc:  # noqa: BLE001 - do not retry a consumed callback
+            log.warning("telegram approval callback acknowledgement failed: %s", exc)
+
+    async def _resolve_approval(approval_id: str, approved: bool, *, principal: str) -> dict:
+        """Resolve exactly one gate item for HTTP and signed Telegram paths."""
+        item, outcome = enhance.resolve_with_outcome(
+            approval_id, approved, decided_by=principal,
+        )
+        if item is None or outcome is None:
+            raise HTTPException(status_code=404, detail="unknown approval")
+        hive.audit_log.record({
+            "tool": "approval_decision",
+            "status": outcome.value,
+            "approved": outcome is DecisionOutcome.APPROVED,
+            "args": {
+                "approval_id": approval_id,
+                "requested_tool": str(item.get("tool", "")),
+            },
+            "actor": "human",
+            "principal": principal,
+        })
+        if outcome is not DecisionOutcome.APPROVED:
+            hive.edit_pending.pop(approval_id, None)
+            hive.task_board.resolve_approval(
+                approval_id, approved=False,
+                error=f"approval {outcome.value}",
+            )
+            return {"executed": False, "status": outcome.value}
+        if str(item.get("tool", "")).startswith("self_mod:"):
+            edit = hive.edit_pending.pop(approval_id, None)
+            if edit is None:
+                return {"executed": False,
+                        "error": "edit not found (process may have restarted)"}
+            outcome = await hive.improver.apply_approved(edit)
+            return {"executed": True, "status": outcome.status,
+                    "branch": outcome.branch, "detail": outcome.detail}
+        dispatch = await hive.tool_executor.execute_approved(item["tool"], item["args"])
+        hive.task_board.resolve_approval(
+            approval_id,
+            approved=dispatch.status is DispatchStatus.OK,
+            error=dispatch.error or "approved tool did not complete",
+        )
+        return {"executed": True, "status": dispatch.status.value,
+                "result": dispatch.result.content if dispatch.result else None,
+                "error": dispatch.error}
+
+    async def _deliver_telegram_approval(approval_id: str, tool: str) -> None:
+        if telegram is None or callback_verifier is None:
+            return
+        targets = sorted(set(cfg.telegram_allowed_user_ids) | set(cfg.telegram_allowed_chat_ids))
+        if not targets:
+            return
+        approve_data, reject_data = callback_verifier.issue(approval_id)
+        markup = {"inline_keyboard": [[
+            {"text": "Approve", "callback_data": approve_data},
+            {"text": "Reject", "callback_data": reject_data},
+        ]]}
+        for target in targets:
+            result = await telegram.send(OutgoingMessage(
+                chat_id=target,
+                text=f"Hive approval required\nTool: {tool}",
+                reply_markup=markup,
+            ))
+            if not result.ok:
+                log.warning("telegram approval delivery failed for approval=%s", approval_id)
+
+    def _on_approval_requested(event) -> None:
+        if telegram is None or callback_verifier is None:
+            return
+        data = getattr(event, "data", {}) or {}
+        approval_id = str(data.get("approval_id", ""))
+        tool = str(data.get("tool", "unknown"))
+        if not approval_id:
+            return
+        try:
+            asyncio.get_running_loop().create_task(_deliver_telegram_approval(approval_id, tool))
+        except RuntimeError:
+            log.warning("telegram approval delivery skipped: no running event loop")
+
+    if telegram is not None and callback_verifier is not None:
+        hive.events.subscribe(EventType.APPROVAL_REQUESTED, _on_approval_requested)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -1055,50 +1159,9 @@ def create_app(
     @app.post("/approvals/decide")
     async def decide(body: ApprovalDecision,
                      approver_principal: str = Depends(require_approver)) -> dict:
-        # Route through the enhancements layer: records an AuditRecord, honors
-        # the kill-switch, and expires stale pending items before delegating to
-        # the PROTECTED gate.
-        item, outcome = enhance.resolve_with_outcome(
-            body.approval_id, body.approved, decided_by=approver_principal,
+        return await _resolve_approval(
+            body.approval_id, body.approved, principal=approver_principal,
         )
-        if item is None or outcome is None:
-            raise HTTPException(status_code=404, detail="unknown approval")
-        hive.audit_log.record({
-            "tool": "approval_decision",
-            "status": outcome.value,
-            "approved": outcome is DecisionOutcome.APPROVED,
-            "args": {
-                "approval_id": body.approval_id,
-                "requested_tool": str(item.get("tool", "")),
-            },
-            "actor": "human",
-            "principal": approver_principal,
-        })
-        if outcome is not DecisionOutcome.APPROVED:
-            hive.edit_pending.pop(body.approval_id, None)
-            hive.task_board.resolve_approval(
-                body.approval_id, approved=False,
-                error=f"approval {outcome.value}",
-            )
-            return {"executed": False, "status": outcome.value}
-        # Self-mod REVIEW-tier edit: route to the self-modifier, not the tool executor.
-        if str(item.get("tool", "")).startswith("self_mod:"):
-            edit = hive.edit_pending.pop(body.approval_id, None)
-            if edit is None:
-                return {"executed": False,
-                        "error": "edit not found (process may have restarted)"}
-            outcome = await hive.improver.apply_approved(edit)
-            return {"executed": True, "status": outcome.status,
-                    "branch": outcome.branch, "detail": outcome.detail}
-        dispatch = await hive.tool_executor.execute_approved(item["tool"], item["args"])
-        hive.task_board.resolve_approval(
-            body.approval_id,
-            approved=dispatch.status is DispatchStatus.OK,
-            error=dispatch.error or "approved tool did not complete",
-        )
-        return {"executed": True, "status": dispatch.status.value,
-                "result": dispatch.result.content if dispatch.result else None,
-                "error": dispatch.error}
 
     # ------------------------------------------------------------------
     # Approval Gate hardening — expiry, kill-switch, history (Pillar 2)
@@ -1585,6 +1648,31 @@ def create_app(
             except Exception as exc:  # noqa: BLE001
                 log.warning("telegram webhook: failed to parse request body: %s", exc)
                 return {"ok": True, "handled": False}
+            callback = _callback_event(update)
+            if callback is not None:
+                callback_id, user_id, callback_data = callback
+                # Callback approval is deliberately stricter than ordinary
+                # Telegram chat: only an explicitly allowlisted *user* may
+                # decide, never everyone who can post in an allowed group.
+                if user_id not in hive.config.telegram_allowed_user_ids:
+                    await _answer_telegram_callback(callback_id, "Not authorized")
+                    return {"ok": True, "handled": False, "reason": "sender_not_allowed"}
+                decision = callback_verifier.consume(callback_data) if callback_verifier else None
+                if decision is None:
+                    await _answer_telegram_callback(callback_id, "Invalid, expired, or used approval")
+                    return {"ok": True, "handled": False, "reason": "invalid_approval_callback"}
+                # Telegram clients wait for this acknowledgement.  Do it before
+                # an approved tool can run, because that action may legitimately
+                # take longer than a callback request.
+                await _answer_telegram_callback(callback_id, "Decision received")
+                try:
+                    result = await _resolve_approval(
+                        decision.approval_id, decision.approved,
+                        principal=f"human:telegram:{user_id}",
+                    )
+                except HTTPException:
+                    return {"ok": True, "handled": False, "reason": "approval_not_pending"}
+                return {"ok": True, "handled": True, "approval": result}
             event = telegram.parse_update(update)
             if event is None:
                 return {"ok": True, "handled": False}  # nothing actionable
