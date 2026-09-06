@@ -278,7 +278,11 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   that do not also rewrite chain metadata are detected by verification. This is
   tamper-evident local storage, not a substitute for a remote immutable log store
   against an attacker who can obtain the integrity key or control the running process. SQLite files receive
-  restrictive owner permissions where the host filesystem supports them. Audit reads
+  restrictive owner permissions where the host filesystem supports them. Existing unanchored audit
+  history is never silently re-baselined: an operator must set the one-time
+  `HIVE_AUDIT_INTEGRITY_BOOTSTRAP=true` alongside the integrity key for its first anchored
+  startup, then remove it. Incomplete anchor metadata fails startup closed.
+  Audit reads
   and gateway shutdown serialize with writers, preventing partially written audit rows
   and reuse of resources that are closing. Injected `create_app(hive)` instances release
   their lifespans without owning the shared runtime; the `hive serve` entry point explicitly
@@ -340,7 +344,8 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   agent limits (`HIVE_MAX_ITERATIONS`, `HIVE_MAX_PER_TOOL`, `HIVE_SELFMOD_THRESHOLD`,
   `HIVE_TOOL_TIMEOUT`), GitHub
   (`HIVE_GITHUB_*`), Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`,
-  `HIVE_TELEGRAM_APPROVAL_SIGNING_KEY`, `HIVE_AUDIT_INTEGRITY_KEY`), sandbox
+  `HIVE_TELEGRAM_APPROVAL_SIGNING_KEY`, `HIVE_AUDIT_INTEGRITY_KEY`; one-time audit migration
+  (`HIVE_AUDIT_INTEGRITY_BOOTSTRAP`)), sandbox
   (`HIVE_SANDBOX_IMAGE`), MCP (`HIVE_MCP_SERVERS`). Pricing overrides via
   `HIVE_PRICE_<MODEL>_{IN,OUT}`. Secrets may live in the OS keyring, with only their
   names recorded in the 0o600 credential manifest (`credentials.save`).
@@ -359,8 +364,10 @@ adapter/bridge checks); they are not used to claim a full-suite pass. CI now run
 behavioral harness in a dedicated read-only `m0-behavioral-regressions` job after the
 normal test matrix.
 The M0 audit-integrity slice adds one-time chain migration, restart tamper detection,
-and cross-instance SQLite writer serialization. The chain remains tamper-evident local
-storage, not an external immutable audit anchor.
+cross-instance SQLite writer serialization. Existing nonempty history requires the explicit,
+one-time `HIVE_AUDIT_INTEGRITY_BOOTSTRAP=true` acknowledgement before a keyed anchor is created;
+subsequent missing or partial anchor metadata fails closed. The chain remains tamper-evident
+local storage, not an external immutable audit anchor.
 Live smokes remain opt-in via `HIVE_LIVE_TEST=1`.
 architecture DAG test (`tests/test_architecture.py`) enforces the `core`-is-leaf invariant
 via static AST scan; CI (`.github/workflows/ci.yml`) runs `ruff check` + compile check +

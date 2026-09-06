@@ -32,6 +32,7 @@ _AUDIT_COLUMNS = (
 )
 _CHAIN_VERSION = "1"
 AUDIT_INTEGRITY_KEY_ENV = "HIVE_AUDIT_INTEGRITY_KEY"
+AUDIT_INTEGRITY_BOOTSTRAP_ENV = "HIVE_AUDIT_INTEGRITY_BOOTSTRAP"
 _ANCHOR_VERSION = "1"
 
 
@@ -44,9 +45,15 @@ def consume_audit_integrity_key() -> bytes | None:
     return key.encode("utf-8")
 
 
+def consume_audit_integrity_bootstrap() -> bool:
+    """Consume the one-time operator acknowledgement for legacy audit history."""
+    return os.environ.pop(AUDIT_INTEGRITY_BOOTSTRAP_ENV, "").strip().lower() == "true"
+
+
 class AuditLog:
     def __init__(self, db_path: str | Path, *, clock: Callable[[], float] = time.time,
-                 max_rows: int = 10_000, integrity_key: bytes | None = None) -> None:
+                 max_rows: int = 10_000, integrity_key: bytes | None = None,
+                 allow_integrity_bootstrap: bool = False) -> None:
         if str(db_path) != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -56,6 +63,7 @@ class AuditLog:
         self._db.execute("PRAGMA busy_timeout=5000")
         self._clock = clock
         self._integrity_key = integrity_key
+        self._allow_integrity_bootstrap = allow_integrity_bootstrap
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS audit_log("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, tool TEXT, status TEXT, "
@@ -92,7 +100,7 @@ class AuditLog:
             "SELECT COUNT(*) AS n FROM audit_log WHERE digest IS NULL OR digest = ''"
         ).fetchone()
         if row and row["n"]:
-            self._rebuild_chain()
+            self._rebuild_chain(seal_anchor=False)
         elif self._db.execute("SELECT 1 FROM audit_meta WHERE key='chain_head'").fetchone() is None:
             head = self._db.execute(
                 "SELECT digest FROM audit_log ORDER BY id DESC LIMIT 1"
@@ -101,7 +109,7 @@ class AuditLog:
             self._set_meta("chain_anchor", "")
         self._set_meta("chain_version", _CHAIN_VERSION)
 
-    def _rebuild_chain(self) -> None:
+    def _rebuild_chain(self, *, seal_anchor: bool = True) -> None:
         previous = ""
         rows = self._db.execute("SELECT * FROM audit_log ORDER BY id").fetchall()
         for row in rows:
@@ -120,7 +128,8 @@ class AuditLog:
             previous = digest
         self._set_meta("chain_anchor", "")
         self._set_meta("chain_head", previous)
-        self._seal_integrity_anchor()
+        if seal_anchor:
+            self._seal_integrity_anchor()
 
     def _anchor_payload(self) -> bytes:
         row = self._db.execute(
@@ -145,12 +154,23 @@ class AuditLog:
 
     def _initialize_integrity_anchor(self) -> None:
         version = self._meta("integrity_anchor_version")
+        signature = self._meta("integrity_anchor_signature")
+        if bool(version) != bool(signature):
+            raise RuntimeError("audit integrity anchor metadata is incomplete")
         if version and self._integrity_key is None:
             raise RuntimeError("audit log has an integrity anchor but HIVE_AUDIT_INTEGRITY_KEY is unavailable")
-        if not version:
-            # The first keyed startup establishes a trust baseline for legacy rows.
-            # It never overwrites an existing signature, so a later restart verifies it.
-            self._seal_integrity_anchor()
+        if version or self._integrity_key is None:
+            return
+        row = self._db.execute("SELECT COUNT(*) AS count FROM audit_log").fetchone()
+        if row and row["count"] and not self._allow_integrity_bootstrap:
+            raise RuntimeError(
+                "existing audit log requires HIVE_AUDIT_INTEGRITY_BOOTSTRAP=true "
+                "before its first integrity anchor can be created"
+            )
+        # A new database needs no migration acknowledgement. Existing history is
+        # anchored only after an explicit operator bootstrap, so deleting both
+        # anchor metadata rows cannot silently establish a forged new baseline.
+        self._seal_integrity_anchor()
 
     def _set_meta(self, key: str, value: str) -> None:
         self._db.execute(
@@ -344,6 +364,17 @@ class AuditLog:
                     "error": "chain head does not match the newest row",
                 }
             version = self._meta("integrity_anchor_version")
+            signature = self._meta("integrity_anchor_signature")
+            if bool(version) != bool(signature):
+                return {
+                    "valid": False, "checked": len(rows),
+                    "error": "audit integrity anchor metadata is incomplete",
+                }
+            if self._integrity_key is not None and not version:
+                return {
+                    "valid": False, "checked": len(rows),
+                    "error": "audit integrity anchor is missing",
+                }
             if version:
                 if version != _ANCHOR_VERSION or self._integrity_key is None:
                     return {
@@ -353,7 +384,7 @@ class AuditLog:
                 expected_signature = hmac.new(
                     self._integrity_key, self._anchor_payload(), hashlib.sha256,
                 ).hexdigest()
-                if not hmac.compare_digest(self._meta("integrity_anchor_signature"), expected_signature):
+                if not hmac.compare_digest(signature, expected_signature):
                     return {
                         "valid": False, "checked": len(rows),
                         "error": "integrity anchor does not match the audit chain",

@@ -91,10 +91,44 @@ def test_keyed_integrity_anchor_detects_a_rebuilt_local_chain(tmp_path):
             db.execute("UPDATE audit_log SET prev_digest=?, digest=? WHERE id=?", (previous, digest, row[0]))
             previous = digest
         db.execute("UPDATE audit_meta SET value=? WHERE key='chain_head'", (previous,))
+        db.execute("DELETE FROM audit_meta WHERE key='integrity_anchor_version'")
 
-    check = AuditLog(path, integrity_key=key).verify_integrity()
+    with pytest.raises(RuntimeError, match="anchor metadata is incomplete"):
+        AuditLog(path, integrity_key=key)
+
+
+def test_existing_audit_history_requires_explicit_anchor_bootstrap(tmp_path):
+    path = tmp_path / "audit.sqlite"
+    audit = AuditLog(path)
+    audit.record({"tool": "legacy", "status": "ok"})
+    audit.close()
+
+    key = b"synthetic-audit-anchor-key-with-sufficient-length"
+    with pytest.raises(RuntimeError, match="HIVE_AUDIT_INTEGRITY_BOOTSTRAP"):
+        AuditLog(path, integrity_key=key)
+
+    anchored = AuditLog(path, integrity_key=key, allow_integrity_bootstrap=True)
+    assert anchored.verify_integrity()["valid"] is True
+    anchored.close()
+
+    with sqlite3.connect(path) as db:
+        db.execute("DELETE FROM audit_meta WHERE key IN ('integrity_anchor_version', 'integrity_anchor_signature')")
+
+    with pytest.raises(RuntimeError, match="HIVE_AUDIT_INTEGRITY_BOOTSTRAP"):
+        AuditLog(path, integrity_key=key)
+
+
+def test_live_keyed_audit_rejects_deleted_anchor_metadata(tmp_path):
+    path = tmp_path / "audit.sqlite"
+    audit = AuditLog(path, integrity_key=b"synthetic-audit-anchor-key-with-sufficient-length")
+    audit.record({"tool": "first", "status": "ok"})
+
+    with sqlite3.connect(path) as db:
+        db.execute("DELETE FROM audit_meta WHERE key='integrity_anchor_version'")
+
+    check = audit.verify_integrity()
     assert check["valid"] is False
-    assert "anchor" in check["error"]
+    assert "anchor metadata is incomplete" in check["error"]
 
 
 def test_production_startup_requires_audit_integrity_key(tmp_path, monkeypatch):
@@ -102,6 +136,16 @@ def test_production_startup_requires_audit_integrity_key(tmp_path, monkeypatch):
     production = replace(cfg, production_mode=True, secret="production-secret")
     monkeypatch.delenv("HIVE_AUDIT_INTEGRITY_KEY", raising=False)
 
+    with pytest.raises(RuntimeError, match="HIVE_AUDIT_INTEGRITY_KEY"):
+        HiveOS.build(production, router=_Router())
+
+
+def test_public_host_heuristic_requires_audit_integrity_key(tmp_path, monkeypatch):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    production = replace(cfg, host="0.0.0.0", secret="production-secret")
+    monkeypatch.delenv("HIVE_AUDIT_INTEGRITY_KEY", raising=False)
+
+    assert production.is_production() is True
     with pytest.raises(RuntimeError, match="HIVE_AUDIT_INTEGRITY_KEY"):
         HiveOS.build(production, router=_Router())
 
@@ -114,6 +158,20 @@ def test_runtime_consumes_audit_integrity_key_before_agent_assembly(tmp_path, mo
 
     assert "HIVE_AUDIT_INTEGRITY_KEY" not in __import__("os").environ
     hive.audit_log.record({"tool": "test", "status": "ok"})
+    assert hive.audit_log.verify_integrity()["valid"] is True
+
+
+def test_runtime_consumes_explicit_legacy_audit_bootstrap(tmp_path, monkeypatch):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    legacy = AuditLog(cfg.data_dir / "audit.sqlite")
+    legacy.record({"tool": "legacy", "status": "ok"})
+    legacy.close()
+    monkeypatch.setenv("HIVE_AUDIT_INTEGRITY_KEY", "synthetic-audit-anchor-secret")
+    monkeypatch.setenv("HIVE_AUDIT_INTEGRITY_BOOTSTRAP", "true")
+
+    hive = HiveOS.build(cfg, router=_Router())
+
+    assert "HIVE_AUDIT_INTEGRITY_BOOTSTRAP" not in __import__("os").environ
     assert hive.audit_log.verify_integrity()["valid"] is True
 
 

@@ -14,6 +14,7 @@ with **35 passed, 1 warning**. The broader affected gateway/runtime/approval/she
 run reported **541 passed, 10 failed, 3 warnings**; every failure was a pre-existing Windows
 assumption about Unix commands or shell syntax (`bash`, `true`, `printf`, `$VAR`). These are
 reported as platform baselines rather than full-suite pass claims.
+
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 
 UI concept branch note (2026-08-22): `gpt-ui-improvements` adds an isolated fixture-only
@@ -122,8 +123,9 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   Response bodies are streamed and capped at 12,000 bytes before decoding and
   returning content to the model.
 - **M0 audit integrity:** audit rows now carry redacted actor/principal attribution
-  and a versioned SHA-256 chain with restart tamper detection. In production,
-  `HIVE_AUDIT_INTEGRITY_KEY` is consumed before agent assembly, redacted, and excluded
+  and a versioned SHA-256 chain with restart tamper detection. Every production deployment,
+  including the non-loopback configuration heuristic, requires
+  `HIVE_AUDIT_INTEGRITY_KEY`, which is consumed before agent assembly, redacted, and excluded
   from shell, Docker, and self-mod child-process environments. It HMAC-signs the chain
   anchor, head, row count, and row-id range so rebuilding the local SQLite chain without
   the key is detected. `GET /audit/verify`
@@ -131,8 +133,10 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   protected. Cross-instance writers serialize through SQLite immediate transactions.
   The keyed chain remains local tamper-evident storage rather than a remote immutable
   log store against an attacker who controls the running process or obtains the key.
-  Focused #151 verification: **44 passed, 1 warning**; the broader affected suite reported
-  **436 passed, 1 warning**. Audit reads and gateway shutdown
+  Existing unanchored history requires the explicit one-time
+  `HIVE_AUDIT_INTEGRITY_BOOTSTRAP=true` acknowledgement; incomplete or deleted anchor metadata
+  does not silently establish a new baseline. Focused #151 verification: **25 passed, 1 warning**;
+  the broader affected suite reported **440 passed, 1 warning**. Audit reads and gateway shutdown
   serialize with writers; only the `hive serve` gateway owns final shutdown of its
   shared runtime.
 - **M0 self-modification risk containment (issue #147):** deterministic tiering
