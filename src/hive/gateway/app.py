@@ -77,24 +77,32 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     secret = cfg.secret
     require_token = make_auth_dependency(secret)
     approver_key = cfg.approver_key
+    approver_principal = "human:out_of_band"
     if not approver_key and not cfg.autonomy_enabled:
         log.warning(
             "HIVE_APPROVER_KEY is not configured; supervised approvals temporarily "
             "fall back to HIVE_SECRET. Configure HIVE_APPROVER_KEY before enabling autonomy."
         )
         approver_key = secret
-    require_approver = make_approver_dependency(approver_key)
+        approver_principal = "human:supervised_fallback"
+    require_approver = make_approver_dependency(
+        approver_key, principal=approver_principal,
+    )
     # Telegram surface (optional): use an injected channel, else build one from config.
     if telegram is None and hive.config.telegram_token:
         telegram = TelegramChannel(hive.config.telegram_token)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        hive.acquire_gateway_lifespan()
         await hive.load_mcp_servers()   # connect configured MCP servers (best-effort, A2)
         log.info("HiveOS gateway online")
-        yield
-        await hive.aclose()
-        log.info("HiveOS gateway offline")
+        try:
+            yield
+        finally:
+            if hive.release_gateway_lifespan():
+                await hive.aclose()
+                log.info("HiveOS gateway offline")
 
     app = FastAPI(title="HiveOS Gateway", lifespan=lifespan)
     _cors_origins = [o.strip() for o in cfg.cors_origins.split(",") if o.strip()] if cfg.cors_origins != "*" else ["*"]
@@ -639,11 +647,16 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         entries = hive.audit_log.recent_by_tool(tool, limit=min(limit, 200))
         return {"tool": tool, "entries": entries, "count": len(entries)}
 
-    @app.delete("/audit/purge", dependencies=[Depends(require_token)])
+    @app.delete("/audit/purge", dependencies=[Depends(require_approver)])
     async def audit_purge(max_age_days: float = 90.0) -> dict:
         """Delete audit entries older than max_age_days. Returns count purged."""
         deleted = hive.audit_log.purge_old(max_age_days=max_age_days)
         return {"deleted": deleted, "max_age_days": max_age_days}
+
+    @app.get("/audit/verify", dependencies=[Depends(require_token)])
+    async def audit_verify() -> dict:
+        """Verify the audit hash chain and return integrity evidence."""
+        return hive.audit_log.verify_integrity()
 
     @app.get("/audit/export", dependencies=[Depends(require_token)])
     async def audit_export(start_ts: float | None = None,
@@ -1034,16 +1047,28 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         hive.edit_pending.pop(body.approval_id, None)
         return {"cancelled": True, "approval_id": body.approval_id}
 
-    @app.post("/approvals/decide", dependencies=[Depends(require_approver)])
-    async def decide(body: ApprovalDecision) -> dict:
+    @app.post("/approvals/decide")
+    async def decide(body: ApprovalDecision,
+                     approver_principal: str = Depends(require_approver)) -> dict:
         # Route through the enhancements layer: records an AuditRecord, honors
         # the kill-switch, and expires stale pending items before delegating to
         # the PROTECTED gate.
         item, outcome = enhance.resolve_with_outcome(
-            body.approval_id, body.approved, decided_by="human:web",
+            body.approval_id, body.approved, decided_by=approver_principal,
         )
         if item is None or outcome is None:
             raise HTTPException(status_code=404, detail="unknown approval")
+        hive.audit_log.record({
+            "tool": "approval_decision",
+            "status": outcome.value,
+            "approved": outcome is DecisionOutcome.APPROVED,
+            "args": {
+                "approval_id": body.approval_id,
+                "requested_tool": str(item.get("tool", "")),
+            },
+            "actor": "human",
+            "principal": approver_principal,
+        })
         if outcome is not DecisionOutcome.APPROVED:
             hive.edit_pending.pop(body.approval_id, None)
             hive.task_board.resolve_approval(

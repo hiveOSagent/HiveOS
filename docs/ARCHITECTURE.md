@@ -249,6 +249,15 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   from executing one rehydrated approval twice. The heartbeat records its
   failure-triggered self-modification cooldown before invoking the diagnoser, so a
   process restart cannot bypass that throttle.
+- **M0 audit integrity boundary:** audit rows carry redacted arguments, actor/principal
+  attribution, and a SHA-256 hash chain persisted in `audit_meta`. `GET /audit/verify`
+  exposes integrity evidence to the normal gateway token, while destructive
+  `DELETE /audit/purge` requires the out-of-band approver credential. Retention and
+  explicit clearing reseal the retained chain segment; direct row edits or deletions
+  that do not also rewrite chain metadata are detected by verification. This is
+  tamper-evident local storage, not a substitute for an external immutable anchor
+  against an attacker with unrestricted SQLite write access. SQLite files receive
+  restrictive owner permissions where the host filesystem supports them.
 - **M0 inbound sender boundary (issue #150):** every enabled inbound channel has two
   checks before a model turn: platform-request authentication and an explicit owner
   allowlist. Telegram requires its Bot API webhook secret plus an allowed user or chat;

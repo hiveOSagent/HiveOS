@@ -12,6 +12,7 @@ row without polling the SQLite log.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import queue
@@ -24,6 +25,9 @@ from typing import Any, Callable
 from hive.core.redact import redact_args
 
 log = logging.getLogger("hive.observability.audit")
+_AUDIT_COLUMNS = (
+    "id, ts, tool, status, approved, error, args, actor, principal, prev_digest, digest"
+)
 
 
 class AuditLog:
@@ -33,27 +37,130 @@ class AuditLog:
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(db_path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
         self._db.execute("PRAGMA journal_mode=WAL")  # shared state DB: reduce writer lock contention
         self._clock = clock
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS audit_log("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, tool TEXT, status TEXT, "
-            "approved INTEGER, error TEXT, args TEXT)"
+            "approved INTEGER, error TEXT, args TEXT, actor TEXT NOT NULL DEFAULT 'agent', "
+            "principal TEXT NOT NULL DEFAULT 'agent', prev_digest TEXT NOT NULL DEFAULT '', "
+            "digest TEXT NOT NULL DEFAULT '')"
         )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS audit_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        self._ensure_columns()
+        self._migrate_chain_if_needed()
         self._max_rows = max_rows
         self._db.commit()
+        self._tighten_permissions(db_path)
+
+    def _ensure_columns(self) -> None:
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(audit_log)")}
+        additions = {
+            "actor": "TEXT NOT NULL DEFAULT 'agent'",
+            "principal": "TEXT NOT NULL DEFAULT 'agent'",
+            "prev_digest": "TEXT NOT NULL DEFAULT ''",
+            "digest": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                self._db.execute(f"ALTER TABLE audit_log ADD COLUMN {name} {definition}")
+
+    def _migrate_chain_if_needed(self) -> None:
+        row = self._db.execute(
+            "SELECT COUNT(*) AS n FROM audit_log WHERE digest IS NULL OR digest = ''"
+        ).fetchone()
+        if row and row["n"]:
+            self._rebuild_chain()
+        elif self._db.execute("SELECT 1 FROM audit_meta WHERE key='chain_head'").fetchone() is None:
+            head = self._db.execute(
+                "SELECT digest FROM audit_log ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self._set_meta("chain_head", head["digest"] if head else "")
+            self._set_meta("chain_anchor", "")
+
+    def _rebuild_chain(self) -> None:
+        previous = ""
+        rows = self._db.execute("SELECT * FROM audit_log ORDER BY id").fetchall()
+        for row in rows:
+            actor = str(row["actor"] or "agent")
+            principal = str(row["principal"] or actor)
+            digest = self._row_digest(
+                row_id=int(row["id"]), ts=float(row["ts"]), tool=str(row["tool"] or ""),
+                status=str(row["status"] or ""), approved=bool(row["approved"]),
+                error=row["error"], args=str(row["args"] or "{}"), actor=actor,
+                principal=principal, prev_digest=previous,
+            )
+            self._db.execute(
+                "UPDATE audit_log SET actor=?, principal=?, prev_digest=?, digest=? WHERE id=?",
+                (actor, principal, previous, digest, row["id"]),
+            )
+            previous = digest
+        self._set_meta("chain_anchor", "")
+        self._set_meta("chain_head", previous)
+
+    def _set_meta(self, key: str, value: str) -> None:
+        self._db.execute(
+            "INSERT INTO audit_meta(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+
+    def _meta(self, key: str) -> str:
+        row = self._db.execute("SELECT value FROM audit_meta WHERE key=?", (key,)).fetchone()
+        return str(row["value"]) if row else ""
+
+    @staticmethod
+    def _row_digest(*, row_id: int, ts: float, tool: str, status: str,
+                    approved: bool, error: Any, args: str, actor: str,
+                    principal: str, prev_digest: str) -> str:
+        payload = json.dumps(
+            {
+                "id": row_id, "ts": ts, "tool": tool, "status": status,
+                "approved": approved, "error": error, "args": args,
+                "actor": actor, "principal": principal, "prev_digest": prev_digest,
+            }, sort_keys=True, separators=(",", ":"), default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def _tighten_permissions(db_path: str | Path) -> None:
+        if str(db_path) == ":memory:":
+            return
+        try:
+            Path(db_path).chmod(0o600)
+        except OSError:
+            # Windows ACLs do not map cleanly to POSIX mode bits; deployment
+            # tooling remains responsible for an equivalent restrictive ACL.
+            pass
 
     def record(self, entry: dict[str, Any]) -> None:
-        ts = self._clock()
-        redacted_args = redact_args(entry.get("args", {}))  # B2: redact secrets
-        self._db.execute(
-            "INSERT INTO audit_log(ts, tool, status, approved, error, args) VALUES(?,?,?,?,?,?)",
-            (ts, entry.get("tool", ""), entry.get("status", ""),
-             1 if entry.get("approved") else 0, entry.get("error"),
-             json.dumps(redacted_args, default=str)),
-        )
-        self._db.commit()
-        self.prune()
+        with self._lock:
+            ts = self._clock()
+            redacted_args = redact_args(entry.get("args", {}))  # B2: redact secrets
+            actor = str(entry.get("actor") or "agent")
+            principal = str(entry.get("principal") or actor)
+            previous = self._meta("chain_head")
+            self._db.execute(
+                "INSERT INTO audit_log(ts, tool, status, approved, error, args, actor, principal, "
+                "prev_digest, digest) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (ts, entry.get("tool", ""), entry.get("status", ""),
+                 1 if entry.get("approved") else 0, entry.get("error"),
+                 json.dumps(redacted_args, default=str), actor, principal, previous, ""),
+            )
+            row_id = int(self._db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            digest = self._row_digest(
+                row_id=row_id, ts=ts, tool=str(entry.get("tool", "")),
+                status=str(entry.get("status", "")), approved=bool(entry.get("approved")),
+                error=entry.get("error"), args=json.dumps(redacted_args, default=str),
+                actor=actor, principal=principal, prev_digest=previous,
+            )
+            self._db.execute("UPDATE audit_log SET digest=? WHERE id=?", (digest, row_id))
+            self._set_meta("chain_head", digest)
+            self._db.commit()
+            self.prune()
         # SPRINT_7 Batch E: publish to real-time subscribers. The broadcaster is
         # best-effort; failures here must not break audit. Wrap in try/except so
         # a queue-full or subscriber-iteration error never blocks record().
@@ -71,7 +178,7 @@ class AuditLog:
 
     def recent(self, limit: int = 50) -> list[dict]:
         rows = self._db.execute(
-            "SELECT id, ts, tool, status, approved, error, args FROM audit_log ORDER BY id DESC LIMIT ?",
+            f"SELECT {_AUDIT_COLUMNS} FROM audit_log ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         entries = []
@@ -112,8 +219,8 @@ class AuditLog:
             # caller's natural left-to-right chronological view.
             inner_where = where  # already includes ANDed clauses
             sql = (
-                f"SELECT id, ts, tool, status, approved, error, args "
-                f"FROM (SELECT id, ts, tool, status, approved, error, args "
+                f"SELECT {_AUDIT_COLUMNS} "
+                f"FROM (SELECT {_AUDIT_COLUMNS} "
                 f"      FROM audit_log {inner_where} "
                 f"      ORDER BY ts DESC, id DESC LIMIT ?) "
                 f"ORDER BY ts ASC, id ASC"
@@ -121,7 +228,7 @@ class AuditLog:
             rows = self._db.execute(sql, tuple(params) + (limit,)).fetchall()
         else:
             sql = (
-                f"SELECT id, ts, tool, status, approved, error, args "
+                f"SELECT {_AUDIT_COLUMNS} "
                 f"FROM audit_log {where} ORDER BY id"
             )
             rows = self._db.execute(sql, tuple(params)).fetchall()
@@ -135,17 +242,58 @@ class AuditLog:
             entries.append(d)
         return entries
 
+    def verify_integrity(self) -> dict[str, Any]:
+        """Verify the audit hash chain and return structured evidence."""
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM audit_log ORDER BY id").fetchall()
+            expected_previous = self._meta("chain_anchor")
+            for row in rows:
+                if row["prev_digest"] != expected_previous:
+                    return {
+                        "valid": False,
+                        "checked": int(row["id"]),
+                        "error": f"row {row['id']} has an unexpected previous digest",
+                    }
+                expected_digest = self._row_digest(
+                    row_id=int(row["id"]), ts=float(row["ts"]), tool=str(row["tool"] or ""),
+                    status=str(row["status"] or ""), approved=bool(row["approved"]),
+                    error=row["error"], args=str(row["args"] or "{}"),
+                    actor=str(row["actor"] or "agent"),
+                    principal=str(row["principal"] or row["actor"] or "agent"),
+                    prev_digest=expected_previous,
+                )
+                if row["digest"] != expected_digest:
+                    return {
+                        "valid": False,
+                        "checked": int(row["id"]),
+                        "error": f"row {row['id']} digest does not match its content",
+                    }
+                expected_previous = expected_digest
+            head = self._meta("chain_head")
+            if head != expected_previous:
+                return {
+                    "valid": False,
+                    "checked": len(rows),
+                    "error": "chain head does not match the newest row",
+                }
+            return {"valid": True, "checked": len(rows), "error": None}
+
     def prune(self, max_rows: int | None = None) -> int:
         """Delete oldest entries beyond max_rows. Returns count deleted."""
-        limit = max_rows if max_rows is not None else self._max_rows
-        cur = self._db.execute(
-            "DELETE FROM audit_log WHERE id NOT IN "
-            "(SELECT id FROM audit_log ORDER BY id DESC LIMIT ?)",
-            (limit,),
-        )
-        if cur.rowcount:
-            self._db.commit()
-        return cur.rowcount
+        with self._lock:
+            limit = max_rows if max_rows is not None else self._max_rows
+            cur = self._db.execute(
+                "DELETE FROM audit_log WHERE id NOT IN "
+                "(SELECT id FROM audit_log ORDER BY id DESC LIMIT ?)",
+                (limit,),
+            )
+            if cur.rowcount:
+                # Retention is an explicit, local operation. Re-seal the retained
+                # segment so routine pruning does not create a false alarm while
+                # unsanctioned UPDATE/DELETE operations still break the chain.
+                self._rebuild_chain()
+                self._db.commit()
+            return cur.rowcount
 
     def stats(self) -> dict:
         """Return audit summary grouped by tool and status (for dashboard/monitoring)."""
@@ -173,7 +321,7 @@ class AuditLog:
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(min(limit, 500))
         rows = self._db.execute(
-            f"SELECT id, ts, tool, status, approved, error, args "
+            f"SELECT {_AUDIT_COLUMNS} "
             f"FROM audit_log {where} ORDER BY id DESC LIMIT ?",
             params,
         ).fetchall()
@@ -208,7 +356,7 @@ class AuditLog:
     def recent_errors(self, limit: int = 20) -> list[dict]:
         """Return the most recent failed/error audit entries (status != 'ok'), newest first."""
         rows = self._db.execute(
-            "SELECT id, ts, tool, status, approved, error, args "
+            f"SELECT {_AUDIT_COLUMNS} "
             "FROM audit_log WHERE status != 'ok' ORDER BY id DESC LIMIT ?",
             (min(limit, 200),),
         ).fetchall()
@@ -225,7 +373,7 @@ class AuditLog:
     def recent_by_tool(self, tool: str, limit: int = 20) -> list[dict]:
         """Return the most recent audit entries for a specific tool (newest first)."""
         rows = self._db.execute(
-            "SELECT id, ts, tool, status, approved, error, args "
+            f"SELECT {_AUDIT_COLUMNS} "
             "FROM audit_log WHERE tool=? ORDER BY id DESC LIMIT ?",
             (tool, min(limit, 200)),
         ).fetchall()
@@ -241,11 +389,13 @@ class AuditLog:
 
     def purge_old(self, max_age_days: float = 90.0) -> int:
         """Delete audit entries older than max_age_days. Returns count deleted."""
-        cutoff = self._clock() - max_age_days * 86_400
-        cur = self._db.execute("DELETE FROM audit_log WHERE ts < ?", (cutoff,))
-        if cur.rowcount:
-            self._db.commit()
-        return cur.rowcount
+        with self._lock:
+            cutoff = self._clock() - max_age_days * 86_400
+            cur = self._db.execute("DELETE FROM audit_log WHERE ts <= ?", (cutoff,))
+            if cur.rowcount:
+                self._rebuild_chain()
+                self._db.commit()
+            return cur.rowcount
 
     def count(self) -> int:
         """Return the total number of audit entries."""
@@ -254,11 +404,15 @@ class AuditLog:
 
     def clear(self) -> None:
         """Remove all audit entries from the database."""
-        self._db.execute("DELETE FROM audit_log")
-        self._db.commit()
+        with self._lock:
+            self._db.execute("DELETE FROM audit_log")
+            self._set_meta("chain_anchor", "")
+            self._set_meta("chain_head", "")
+            self._db.commit()
 
     def close(self) -> None:
-        self._db.close()
+        with self._lock:
+            self._db.close()
 
 
 # ---------------------------------------------------------------------------
