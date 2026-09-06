@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import re
 from typing import Any, Iterable
-from urllib.parse import quote, quote_plus, unquote
+from urllib.parse import quote, quote_plus, unquote, unquote_plus
 
 # Exact-match (case-insensitive) arg/field names whose VALUE is always a secret.
 _SENSITIVE_KEYS = frozenset({
@@ -79,17 +79,26 @@ def clear_registered_secret_values() -> None:
 
 def contains_known_secret(text: str, *, env: dict[str, str] | None = None) -> bool:
     """Return whether text contains any configured secret value."""
-    decoded = unquote(text)
-    return any(value in text or value in decoded for value in known_secret_values(env))
+    decoded_forms = {text}
+    for _ in range(3):
+        next_forms = {unquote(value) for value in decoded_forms}
+        next_forms.update(unquote_plus(value) for value in decoded_forms)
+        if next_forms <= decoded_forms:
+            break
+        decoded_forms.update(next_forms)
+    return any(secret in value for secret in known_secret_values(env) for value in decoded_forms)
 
 
 def redact_known_secrets(text: str, *, env: dict[str, str] | None = None) -> str:
     """Redact known configured values as well as recognizable secret shapes."""
     redacted = redact_text(text)
     for value in sorted(known_secret_values(env), key=len, reverse=True):
-        redacted = redacted.replace(value, _MASK)
-        redacted = redacted.replace(quote(value, safe=""), _MASK)
-        redacted = redacted.replace(quote_plus(value, safe=""), _MASK)
+        encoded_forms = {value}
+        for _ in range(3):
+            encoded_forms.update(quote(item, safe="") for item in tuple(encoded_forms))
+            encoded_forms.update(quote_plus(item, safe="") for item in tuple(encoded_forms))
+        for encoded in encoded_forms:
+            redacted = redacted.replace(encoded, _MASK)
     return redacted
 
 
