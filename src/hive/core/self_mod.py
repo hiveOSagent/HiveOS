@@ -37,6 +37,15 @@ Runner = Callable[[str | list[str], str | None], Awaitable[tuple[int, str]]]
 ApplyFn = Callable[[str], Awaitable[list[str]]]
 
 
+def _review_required_paths(paths: list[str]) -> list[str]:
+    """Return actual paths whose edits cannot remain on the AUTO path."""
+    # Import lazily to keep self_mod usable as a low-level core module: spec_search
+    # builds on SelfModifier and therefore cannot be imported at module load time.
+    from hive.core.spec_search import path_requires_review
+
+    return [path for path in paths if path_requires_review(path)]
+
+
 async def _default_run(cmd: str | list[str], cwd: str | None = None) -> tuple[int, str]:
     child_env = {key: value for key, value in os.environ.items()
                  if key != "HIVE_APPROVER_KEY"}
@@ -344,11 +353,44 @@ class SelfModifier:
             if _touches_protected(changed):
                 return {"ok": False, "stage": "protected",
                         "msg": "actual change touches SOUL.md or approval gate — human-only"}
+            review_paths = _review_required_paths(changed)
+            if review_paths:
+                return {"ok": False, "stage": "review_required",
+                        "msg": "actual change requires REVIEW tier before commit",
+                        "review_paths": review_paths, "changed": changed}
 
             rc, test_out = await self._run(self._test_cmd, wt)
             if rc != 0:
                 return {"ok": False, "stage": "test", "last_good": last_good,
                         "log": test_out[-2000:], "recorded": True}
+
+            # Re-read the candidate after tests. A test command is executable code
+            # and may create or modify files; nothing may be committed until its
+            # final Git state still matches the apply callback and policy floor.
+            rc, final_changed, change_error = await _actual_changed_files(self._run, wt)
+            if rc != 0:
+                return {"ok": False, "stage": "changed_files",
+                        "msg": "unable to verify final candidate worktree changes",
+                        "log": change_error[-1000:]}
+            final_set = {_normalize_changed_path(path) for path in final_changed}
+            if final_set != actual_set:
+                log.warning("self_mod BLOCKED: tests changed the candidate file list; "
+                            "before=%s after=%s", sorted(actual_set), sorted(final_set))
+                if _touches_protected(final_changed):
+                    return {"ok": False, "stage": "protected",
+                            "msg": "tests changed a protected file — human-only"}
+                return {"ok": False, "stage": "changed_files",
+                        "msg": "tests changed the candidate file list",
+                        "before": sorted(actual_set), "after": sorted(final_set)}
+            if _touches_protected(final_changed):
+                return {"ok": False, "stage": "protected",
+                        "msg": "tests changed a protected file — human-only"}
+            review_paths = _review_required_paths(final_changed)
+            if review_paths:
+                return {"ok": False, "stage": "review_required",
+                        "msg": "final candidate change requires REVIEW tier before commit",
+                        "review_paths": review_paths, "changed": final_changed}
+            changed = final_changed
 
             if dry_run:
                 return {"ok": True, "stage": "dry_run", "branch": branch,

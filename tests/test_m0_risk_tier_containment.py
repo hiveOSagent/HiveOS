@@ -95,3 +95,46 @@ def test_self_modifier_uses_verified_git_paths_for_dry_run_result():
 
     assert result["ok"] is True
     assert result["changed"] == ["docs/NOTES.md"]
+
+
+def test_self_modifier_rejects_actual_sensitive_path_on_auto_path():
+    async def apply(_worktree: str) -> list[str]:
+        return ["src/hive/core/runtime.py"]
+
+    modifier = SelfModifier(
+        repo_root="/tmp/hiveos-m0-test",
+        run=_git_runner("src/hive/core/runtime.py\n"),
+    )
+    result = asyncio.run(modifier.propose("test", "test", apply, dry_run=True))
+
+    assert result["ok"] is False
+    assert result["stage"] == "review_required"
+
+
+def test_self_modifier_rechecks_git_paths_after_tests():
+    async def apply(_worktree: str) -> list[str]:
+        return ["docs/NOTES.md"]
+
+    calls = 0
+
+    async def run(cmd, cwd=None):
+        nonlocal calls
+        command = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if "git diff --name-only" in command:
+            calls += 1
+            return (0, "docs/NOTES.md\n" if calls == 1 else "Config/SOUL.md\n")
+        if "git ls-files --others" in command:
+            return 0, ""
+        if "git rev-parse" in command:
+            return 0, "deadbeef\n"
+        if command == "pytest -q":
+            return 0, "ok"
+        return 0, "ok"
+
+    modifier = SelfModifier(
+        repo_root="/tmp/hiveos-m0-test", run=run, test_cmd="pytest -q",
+    )
+    result = asyncio.run(modifier.propose("test", "test", apply, dry_run=True))
+
+    assert result["ok"] is False
+    assert result["stage"] == "protected"

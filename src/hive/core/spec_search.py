@@ -402,6 +402,12 @@ class SelfImprovement:
                     status="blocked_protected",
                     detail=str(result.get("msg", "touches a PROTECTED file")),
                 )
+            elif stage == "review_required":
+                outcome = EditOutcome(
+                    edit_id=edit.id, op=edit.op, tier=RiskTier.REVIEW,
+                    status="blocked_safety",
+                    detail=str(result.get("msg", "actual change requires REVIEW")),
+                )
             else:
                 outcome = EditOutcome(
                     edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status="failed",
