@@ -13,8 +13,9 @@ Verification snapshot: #123-focused tests **34 passed**; affected autonomy/tools
 suites **231 passed, 2 skipped**. The prior M0 #120-#122 focused snapshot was
 **18 passed**; its broader approval/config/autonomy/sandbox suites were **290 passed**.
 The prior full `pytest -q` snapshot was **4151 passed,
-19 failed, 18 skipped, 12 warnings** on Windows (the current full run is **4169 passed**,
-with the same 19 baseline/platform failures). The full-suite failures are documented
+19 failed, 18 skipped, 12 warnings** on Windows (the current full run is **4194 passed,
+19 failed, 18 skipped, 13 warnings** on Windows, with the same 19 baseline/platform
+failures). The full-suite failures are documented
 platform/baseline limitations, not an M0 pass claim.
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 
