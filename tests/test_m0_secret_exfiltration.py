@@ -171,7 +171,10 @@ def test_web_get_refuses_percent_encoded_configured_secret(monkeypatch) -> None:
 def test_web_get_refuses_repeated_or_plus_encoded_configured_secret(monkeypatch) -> None:
     secret = "synthetic secret/value"
     monkeypatch.setenv("HIVE_TEST_API_TOKEN", secret)
-    encoded_values = (quote(quote(secret, safe=""), safe=""), quote_plus(secret, safe=""))
+    four_times_encoded = secret
+    for _ in range(4):
+        four_times_encoded = quote(four_times_encoded, safe="")
+    encoded_values = (quote(quote(secret, safe=""), safe=""), four_times_encoded, quote_plus(secret, safe=""))
 
     for encoded in encoded_values:
         dispatch = asyncio.run(

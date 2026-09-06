@@ -80,7 +80,7 @@ def clear_registered_secret_values() -> None:
 def contains_known_secret(text: str, *, env: dict[str, str] | None = None) -> bool:
     """Return whether text contains any configured secret value."""
     decoded_forms = {text}
-    for _ in range(3):
+    while True:
         next_forms = {unquote(value) for value in decoded_forms}
         next_forms.update(unquote_plus(value) for value in decoded_forms)
         if next_forms <= decoded_forms:
@@ -94,9 +94,13 @@ def redact_known_secrets(text: str, *, env: dict[str, str] | None = None) -> str
     redacted = redact_text(text)
     for value in sorted(known_secret_values(env), key=len, reverse=True):
         encoded_forms = {value}
-        for _ in range(3):
-            encoded_forms.update(quote(item, safe="") for item in tuple(encoded_forms))
-            encoded_forms.update(quote_plus(item, safe="") for item in tuple(encoded_forms))
+        pending = [value]
+        while pending:
+            item = pending.pop()
+            for encoded in (quote(item, safe=""), quote_plus(item, safe="")):
+                if encoded not in encoded_forms and len(encoded) <= len(redacted):
+                    encoded_forms.add(encoded)
+                    pending.append(encoded)
         for encoded in encoded_forms:
             redacted = redacted.replace(encoded, _MASK)
     return redacted
