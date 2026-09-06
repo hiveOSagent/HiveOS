@@ -6,7 +6,7 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **M0 issues #120-#123, #143, and #145** (out-of-band
+Last reconciled after **M0 issues #120-#123, #143, #145, and #151** (out-of-band
 approver credential, mandatory autonomous self-mod sandbox, command/file
 containment, durable approval/cooldown state, behavioral regressions, and signed
 Telegram approval callbacks), 2026-09-06. The focused #145 approval suites last ran
@@ -14,6 +14,7 @@ with **35 passed, 1 warning**. The broader affected gateway/runtime/approval/she
 run reported **541 passed, 10 failed, 3 warnings**; every failure was a pre-existing Windows
 assumption about Unix commands or shell syntax (`bash`, `true`, `printf`, `$VAR`). These are
 reported as platform baselines rather than full-suite pass claims.
+
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 
 UI concept branch note (2026-08-22): `gpt-ui-improvements` adds an isolated fixture-only
@@ -122,11 +123,20 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   Response bodies are streamed and capped at 12,000 bytes before decoding and
   returning content to the model.
 - **M0 audit integrity:** audit rows now carry redacted actor/principal attribution
-  and a versioned SHA-256 chain with restart tamper detection. `GET /audit/verify`
+  and a versioned SHA-256 chain with restart tamper detection. Every production deployment,
+  including the non-loopback configuration heuristic, requires
+  `HIVE_AUDIT_INTEGRITY_KEY`, which is consumed before agent assembly, redacted, and excluded
+  from shell, Docker, and self-mod child-process environments. It HMAC-signs the chain
+  anchor, head, row count, and row-id range so rebuilding the local SQLite chain without
+  the key is detected. `GET /audit/verify`
   exposes integrity evidence to the normal token, while audit purge remains approver
   protected. Cross-instance writers serialize through SQLite immediate transactions.
-  The chain remains tamper-evident local storage rather than an external immutable
-  anchor against unrestricted database writes. Audit reads and gateway shutdown
+  The keyed chain remains local tamper-evident storage rather than a remote immutable
+  log store against an attacker who controls the running process or obtains the key.
+  Existing unanchored history requires the explicit one-time
+  `HIVE_AUDIT_INTEGRITY_BOOTSTRAP=true` acknowledgement; incomplete or deleted anchor metadata
+  does not silently establish a new baseline. Focused #151 verification: **25 passed, 1 warning**;
+  the broader affected suite reported **440 passed, 1 warning**. Audit reads and gateway shutdown
   serialize with writers; only the `hive serve` gateway owns final shutdown of its
   shared runtime.
 - **M0 self-modification risk containment (issue #147):** deterministic tiering

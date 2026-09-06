@@ -13,8 +13,10 @@ row without polling the SQLite log.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
+import os
 import queue
 import sqlite3
 import threading
@@ -22,18 +24,36 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from hive.core.redact import redact_args, redact_known_secrets
+from hive.core.redact import redact_args, redact_known_secrets, register_secret_values
 
 log = logging.getLogger("hive.observability.audit")
 _AUDIT_COLUMNS = (
     "id, ts, tool, status, approved, error, args, actor, principal, prev_digest, digest"
 )
 _CHAIN_VERSION = "1"
+AUDIT_INTEGRITY_KEY_ENV = "HIVE_AUDIT_INTEGRITY_KEY"
+AUDIT_INTEGRITY_BOOTSTRAP_ENV = "HIVE_AUDIT_INTEGRITY_BOOTSTRAP"
+_ANCHOR_VERSION = "1"
+
+
+def consume_audit_integrity_key() -> bytes | None:
+    """Consume the audit-anchor key before agent components inherit the environment."""
+    key = os.environ.pop(AUDIT_INTEGRITY_KEY_ENV, "")
+    if not key:
+        return None
+    register_secret_values([key])
+    return key.encode("utf-8")
+
+
+def consume_audit_integrity_bootstrap() -> bool:
+    """Consume the one-time operator acknowledgement for legacy audit history."""
+    return os.environ.pop(AUDIT_INTEGRITY_BOOTSTRAP_ENV, "").strip().lower() == "true"
 
 
 class AuditLog:
     def __init__(self, db_path: str | Path, *, clock: Callable[[], float] = time.time,
-                 max_rows: int = 10_000) -> None:
+                 max_rows: int = 10_000, integrity_key: bytes | None = None,
+                 allow_integrity_bootstrap: bool = False) -> None:
         if str(db_path) != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -42,6 +62,8 @@ class AuditLog:
         self._db.execute("PRAGMA journal_mode=WAL")  # shared state DB: reduce writer lock contention
         self._db.execute("PRAGMA busy_timeout=5000")
         self._clock = clock
+        self._integrity_key = integrity_key
+        self._allow_integrity_bootstrap = allow_integrity_bootstrap
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS audit_log("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, tool TEXT, status TEXT, "
@@ -54,6 +76,7 @@ class AuditLog:
         )
         self._ensure_columns()
         self._migrate_chain_if_needed()
+        self._initialize_integrity_anchor()
         self._max_rows = max_rows
         self._db.commit()
         self._tighten_permissions(db_path)
@@ -77,7 +100,7 @@ class AuditLog:
             "SELECT COUNT(*) AS n FROM audit_log WHERE digest IS NULL OR digest = ''"
         ).fetchone()
         if row and row["n"]:
-            self._rebuild_chain()
+            self._rebuild_chain(seal_anchor=False)
         elif self._db.execute("SELECT 1 FROM audit_meta WHERE key='chain_head'").fetchone() is None:
             head = self._db.execute(
                 "SELECT digest FROM audit_log ORDER BY id DESC LIMIT 1"
@@ -86,7 +109,7 @@ class AuditLog:
             self._set_meta("chain_anchor", "")
         self._set_meta("chain_version", _CHAIN_VERSION)
 
-    def _rebuild_chain(self) -> None:
+    def _rebuild_chain(self, *, seal_anchor: bool = True) -> None:
         previous = ""
         rows = self._db.execute("SELECT * FROM audit_log ORDER BY id").fetchall()
         for row in rows:
@@ -105,6 +128,49 @@ class AuditLog:
             previous = digest
         self._set_meta("chain_anchor", "")
         self._set_meta("chain_head", previous)
+        if seal_anchor:
+            self._seal_integrity_anchor()
+
+    def _anchor_payload(self) -> bytes:
+        row = self._db.execute(
+            "SELECT COUNT(*) AS count, MIN(id) AS first_id, MAX(id) AS last_id FROM audit_log"
+        ).fetchone()
+        payload = {
+            "version": _ANCHOR_VERSION,
+            "chain_anchor": self._meta("chain_anchor"),
+            "chain_head": self._meta("chain_head"),
+            "count": int(row["count"]),
+            "first_id": row["first_id"],
+            "last_id": row["last_id"],
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    def _seal_integrity_anchor(self) -> None:
+        if self._integrity_key is None:
+            return
+        signature = hmac.new(self._integrity_key, self._anchor_payload(), hashlib.sha256).hexdigest()
+        self._set_meta("integrity_anchor_version", _ANCHOR_VERSION)
+        self._set_meta("integrity_anchor_signature", signature)
+
+    def _initialize_integrity_anchor(self) -> None:
+        version = self._meta("integrity_anchor_version")
+        signature = self._meta("integrity_anchor_signature")
+        if bool(version) != bool(signature):
+            raise RuntimeError("audit integrity anchor metadata is incomplete")
+        if version and self._integrity_key is None:
+            raise RuntimeError("audit log has an integrity anchor but HIVE_AUDIT_INTEGRITY_KEY is unavailable")
+        if version or self._integrity_key is None:
+            return
+        row = self._db.execute("SELECT COUNT(*) AS count FROM audit_log").fetchone()
+        if row and row["count"] and not self._allow_integrity_bootstrap:
+            raise RuntimeError(
+                "existing audit log requires HIVE_AUDIT_INTEGRITY_BOOTSTRAP=true "
+                "before its first integrity anchor can be created"
+            )
+        # A new database needs no migration acknowledgement. Existing history is
+        # anchored only after an explicit operator bootstrap, so deleting both
+        # anchor metadata rows cannot silently establish a forged new baseline.
+        self._seal_integrity_anchor()
 
     def _set_meta(self, key: str, value: str) -> None:
         self._db.execute(
@@ -168,6 +234,7 @@ class AuditLog:
                 )
                 self._db.execute("UPDATE audit_log SET digest=? WHERE id=?", (digest, row_id))
                 self._set_meta("chain_head", digest)
+                self._seal_integrity_anchor()
                 self._db.commit()
             except Exception:
                 self._db.rollback()
@@ -296,6 +363,32 @@ class AuditLog:
                     "checked": len(rows),
                     "error": "chain head does not match the newest row",
                 }
+            version = self._meta("integrity_anchor_version")
+            signature = self._meta("integrity_anchor_signature")
+            if bool(version) != bool(signature):
+                return {
+                    "valid": False, "checked": len(rows),
+                    "error": "audit integrity anchor metadata is incomplete",
+                }
+            if self._integrity_key is not None and not version:
+                return {
+                    "valid": False, "checked": len(rows),
+                    "error": "audit integrity anchor is missing",
+                }
+            if version:
+                if version != _ANCHOR_VERSION or self._integrity_key is None:
+                    return {
+                        "valid": False, "checked": len(rows),
+                        "error": "audit integrity anchor cannot be verified",
+                    }
+                expected_signature = hmac.new(
+                    self._integrity_key, self._anchor_payload(), hashlib.sha256,
+                ).hexdigest()
+                if not hmac.compare_digest(signature, expected_signature):
+                    return {
+                        "valid": False, "checked": len(rows),
+                        "error": "integrity anchor does not match the audit chain",
+                    }
             return {"valid": True, "checked": len(rows), "error": None}
 
     def prune(self, max_rows: int | None = None) -> int:
@@ -442,6 +535,7 @@ class AuditLog:
                 self._db.execute("DELETE FROM audit_log")
                 self._set_meta("chain_anchor", "")
                 self._set_meta("chain_head", "")
+                self._seal_integrity_anchor()
                 self._db.commit()
             except Exception:
                 self._db.rollback()

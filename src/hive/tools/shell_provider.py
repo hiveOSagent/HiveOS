@@ -28,7 +28,9 @@ def _without_approver_key(env: dict[str, str] | None) -> dict[str, str]:
     source = os.environ if env is None else env
     return {
         key: value for key, value in source.items()
-        if key not in {"HIVE_APPROVER_KEY", "HIVE_TELEGRAM_APPROVAL_SIGNING_KEY"}
+        if key not in {
+            "HIVE_APPROVER_KEY", "HIVE_TELEGRAM_APPROVAL_SIGNING_KEY", "HIVE_AUDIT_INTEGRITY_KEY",
+        }
     }
 
 
@@ -85,7 +87,9 @@ class DockerShellProvider(ShellProvider):
         # Avoid inheriting the approver key into the Docker CLI process.  Keep
         # the legacy call shape when the parent does not carry the key so
         # existing provider fakes and callers remain compatible.
-        if {"HIVE_APPROVER_KEY", "HIVE_TELEGRAM_APPROVAL_SIGNING_KEY"} & os.environ.keys():
+        if {
+            "HIVE_APPROVER_KEY", "HIVE_TELEGRAM_APPROVAL_SIGNING_KEY", "HIVE_AUDIT_INTEGRITY_KEY",
+        } & os.environ.keys():
             kwargs["env"] = _without_approver_key(None)
         proc = await asyncio.create_subprocess_shell(full, **kwargs)
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
