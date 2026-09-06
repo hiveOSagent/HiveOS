@@ -186,6 +186,20 @@ def test_runtime_close_is_idempotent(tmp_path):
     asyncio.run(hive.aclose())
 
 
+def test_runtime_close_continues_after_router_close_failure(tmp_path):
+    hive = _hive(tmp_path)
+
+    async def fail_close() -> None:
+        raise RuntimeError("router close failed")
+
+    hive.router.aclose = fail_close
+    with pytest.raises(RuntimeError, match="router close failed"):
+        asyncio.run(hive.aclose())
+    assert hive.audit_log._db is not None
+    with pytest.raises(Exception):
+        hive.audit_log.count()
+
+
 def test_audit_chain_serializes_writers_across_instances(tmp_path):
     path = tmp_path / "audit.sqlite"
     audits = [AuditLog(path), AuditLog(path)]

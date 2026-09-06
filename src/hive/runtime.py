@@ -822,22 +822,37 @@ class HiveOS:
     async def aclose(self, *, _gateway_final: bool = False) -> None:
         if not _gateway_final and not self._begin_shutdown():
             return
+        first_error: Exception | None = None
+
+        def close_resource(close) -> None:
+            nonlocal first_error
+            try:
+                close()
+            except Exception as exc:  # noqa: BLE001 - shutdown must continue
+                if first_error is None:
+                    first_error = exc
+
         try:
             close_router = getattr(self.router, "aclose", None)
             if close_router is not None:
-                await close_router()
+                try:
+                    await close_router()
+                except Exception as exc:  # noqa: BLE001 - shutdown must continue
+                    first_error = exc
             mem_close = getattr(self.memory, "close", None)
             if mem_close is not None:
-                mem_close()
-            self.session_store.close()
-            self.skill_usage.close()
-            self.task_board.close()
-            self.cron.close()
-            self.commitments.close()
-            self.host_llm.close()
-            self.audit_log.close()
+                close_resource(mem_close)
+            close_resource(self.session_store.close)
+            close_resource(self.skill_usage.close)
+            close_resource(self.task_board.close)
+            close_resource(self.cron.close)
+            close_resource(self.commitments.close)
+            close_resource(self.host_llm.close)
+            close_resource(self.audit_log.close)
         finally:
             self._finish_shutdown()
+        if first_error is not None:
+            raise first_error
 
     @classmethod
     def build(cls, config: HiveConfig | None = None, *,
