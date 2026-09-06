@@ -6,11 +6,13 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **M0 issues #120-#122** (out-of-band approver credential,
-mandatory autonomous self-mod sandbox, and command/file containment, branch
-`codex/m0-command-containment`, 2026-09-06). Verification snapshot: focused M0
-**18 passed**; affected approval/config/autonomy/sandbox
-suites **290 passed**; full `pytest -q` **4151 passed,
+Last reconciled after **M0 issues #120-#123** (out-of-band approver credential,
+ mandatory autonomous self-mod sandbox, command/file containment, and durable
+ approval/cooldown state, branch `codex/m0-command-containment`, 2026-09-06).
+Verification snapshot: #123-focused tests **34 passed**; affected autonomy/tools
+suites **231 passed, 2 skipped**. The prior M0 #120-#122 focused snapshot was
+**18 passed**; its broader approval/config/autonomy/sandbox suites were **290 passed**.
+The prior full `pytest -q` snapshot was **4151 passed,
 19 failed, 18 skipped, 12 warnings** on Windows (the current full run is **4169 passed**,
 with the same 19 baseline/platform failures). The full-suite failures are documented
 platform/baseline limitations, not an M0 pass claim.
@@ -98,6 +100,14 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   independent of CWD to deny sensitive repository reads/writes and root-escaping
   symlinks. Regression coverage is in `tests/test_m0_command_containment.py`
   (**18 focused tests**).
+- **M0 durable approval and cooldown state (issue #123):** the operational wrapper,
+  not protected `Core/approval_gate.py`, writes pending approvals to
+  `approvals_pending` and rehydrates non-expired rows at runtime startup. An atomic
+  consume gives a concurrent decision exactly one executable result. The heartbeat
+  writes its failure-triggered self-modification timestamp to
+  `autonomy_cooldowns` before calling the diagnoser, preserving the cooldown across
+  restart. Regression coverage is in `tests/test_m0_approval_persistence.py` and
+  `tests/test_self_improve_loop_e2e.py`.
 - **Providers (M8):** Anthropic + Codex adapters behind `LLMAdapter`; `make_adapter(provider)`
   registry; executor switchable via `HIVE_EXEC_PROVIDER` (minimax|anthropic).
 - **Mission Control visibility (M10-a):** Four authenticated gateway endpoints expose runtime

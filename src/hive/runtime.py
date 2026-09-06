@@ -813,6 +813,10 @@ class HiveOS:
         cfg.ensure_dirs()
         set_config(cfg)                       # make get_config() return the built config (D1)
         credentials.inject()                   # populate env from the 0o600 vault (A4)
+        # The global operational wrapper owns only state around the immutable gate.
+        # Binding it here makes restart rehydration use the assembled runtime's DB.
+        from hive.core.approval_enhancements import enhance
+        enhance.configure_persistence(str(cfg.state_db))
         events = EventBus()                    # each assembled HiveOS owns its bus (no cross-talk)
 
         # Budget guard: sync gate for the router; record_call on every successful call.

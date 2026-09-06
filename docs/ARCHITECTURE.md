@@ -234,6 +234,12 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   environments. Autonomous self-modification additionally requires `HIVE_SANDBOX_IMAGE`;
   candidate test commands run through Docker with no network and only the candidate worktree
   mounted. Supervised self-mod remains available without a sandbox image.
+- **M0 durable safety state (issue #123):** the approval enhancement wrapper persists
+  pending approval payloads in the runtime SQLite database. Startup rehydrates only
+  non-expired requests, and atomic consumption prevents concurrent approver requests
+  from executing one rehydrated approval twice. The heartbeat records its
+  failure-triggered self-modification cooldown before invoking the diagnoser, so a
+  process restart cannot bypass that throttle.
 - **Hardening (M7):** secrets are masked by `core/redact.py` before hitting the audit
   trail/logs; tools self-report `available()` (unavailable ones are hidden from the model
   and refused by the executor); sessions get an out-of-band aux-model title

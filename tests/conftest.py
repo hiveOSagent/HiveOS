@@ -36,6 +36,7 @@ def _reset_globals():
     saved_config = _config_mod._CONFIG
     saved_env = {k: os.environ.get(k) for k in _DOTENV_VARS}
     _approval_gate._pending.clear()
+    _approval_enhance.configure_persistence(None)
     _approval_enhance.release_kill_switch(released_by="pytest fixture")
     _config_mod._CONFIG = None   # start each test from a clean config slate
     # Remove dotenv-loaded vars so tests see only defaults
@@ -43,6 +44,7 @@ def _reset_globals():
         os.environ.pop(k, None)
     yield
     _approval_gate._pending.clear()
+    _approval_enhance.configure_persistence(None)
     _approval_enhance.release_kill_switch(released_by="pytest fixture")
     _config_mod._CONFIG = saved_config
     # Restore pre-test env state
