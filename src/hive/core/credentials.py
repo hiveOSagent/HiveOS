@@ -46,8 +46,8 @@ def _keyring() -> Any:
     except ImportError as exc:  # pragma: no cover - dependency is declared
         raise CredentialStoreError("keyring dependency is unavailable") from exc
     backend = keyring.get_keyring()
-    backend_module = type(backend).__module__
-    if backend_module.startswith("keyring.backends.fail"):
+    backend_module = type(backend).__module__.casefold()
+    if backend_module.startswith(("keyring.backends.fail", "keyrings.alt")):
         raise CredentialStoreError(
             "no secure OS credential backend is configured; refusing plaintext credential storage"
         )

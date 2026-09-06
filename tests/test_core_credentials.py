@@ -619,6 +619,18 @@ def test_keyring_failure_does_not_create_plaintext_vault(tmp_path, monkeypatch):
     assert not credentials._path().exists()
 
 
+def test_plaintext_keyring_fallback_is_rejected(monkeypatch):
+    import keyring
+
+    class PlaintextKeyring:
+        pass
+
+    PlaintextKeyring.__module__ = "keyrings.alt.file"
+    monkeypatch.setattr(keyring, "get_keyring", PlaintextKeyring)
+    with pytest.raises(credentials.CredentialStoreError, match="secure OS credential backend"):
+        credentials._keyring()
+
+
 def test_failed_legacy_migration_preserves_plaintext_until_safe(tmp_path, monkeypatch):
     _cfg(tmp_path)
     legacy = '{"LEGACY_TOKEN": "synthetic-legacy-secret"}'
