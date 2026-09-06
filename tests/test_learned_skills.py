@@ -301,6 +301,7 @@ def _client(monkeypatch, tmp_path):
     """Build a TestClient with a minimal wired HiveOS (no real LLM)."""
     from hive.runtime import HiveOS
     monkeypatch.setenv("HIVE_SECRET", "test-secret")
+    monkeypatch.setenv("HIVE_HOST", "127.0.0.1")
     monkeypatch.setenv("HIVE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("HIVE_STATE_DB", str(tmp_path / "state.sqlite"))
     import hive.core.config as cfg_mod
