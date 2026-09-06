@@ -100,8 +100,9 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   independent of CWD to deny sensitive repository reads/writes and root-escaping
   symlinks. The whole .git/ and .github/workflows/ directory trees are protected
   with boundary-aware normalized matching, while unrelated names such as .gitignore
-  remain permitted. Only git status and git describe are safe; branch-changing,
-  content-bearing, and output-writing Git commands are approval-bound.
+  remain permitted. Path/content inspection shell aliases are approval-bound. Only
+  bare git status and git describe are safe; any Git option or argument and every
+  branch-changing, content-bearing, or output-writing Git command is approval-bound.
   Regression coverage is in tests/test_m0_command_containment.py.
 - **M0 durable approval and cooldown state (issue #123):** the operational wrapper,
   not protected `Core/approval_gate.py`, writes pending approvals to

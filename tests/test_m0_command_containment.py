@@ -104,6 +104,19 @@ def test_content_bearing_or_mutating_git_commands_are_gated(command):
     assert approval.gate.is_dangerous("shell", {"cmd": command}) is True
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -ccore.pager=cat status",
+        "git --paginate status",
+        "git --git-dir=.git status",
+        "git status -- .github/workflows",
+    ],
+)
+def test_git_options_or_arguments_are_gated(command):
+    assert approval.gate.is_dangerous("shell", {"cmd": command}) is True
+
+
 def test_non_content_git_status_remains_safe():
     assert approval.gate.is_dangerous("shell", {"cmd": "git status"}) is False
 
@@ -129,6 +142,22 @@ def test_unmatched_shell_command_is_gated_not_executed():
         "shell", {"cmd": "curl https://example.invalid"}
     ))
 
+    assert dispatch.status is DispatchStatus.PENDING
+    assert shell.executed is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        r"type .git\HEAD",
+        r"type .github\workflows\ci.yml",
+    ],
+)
+def test_embedded_protected_paths_are_gated_before_shell_execution(command):
+    shell = _Shell()
+    dispatch = asyncio.run(ToolExecutor({"shell": shell}).execute("shell", {"cmd": command}))
+
+    assert approval.gate.is_dangerous("shell", {"cmd": command}) is True
     assert dispatch.status is DispatchStatus.PENDING
     assert shell.executed is False
 

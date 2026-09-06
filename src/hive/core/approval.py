@@ -41,8 +41,7 @@ _PROTECTED_RELATIVE_PATHS = frozenset(
     for path in PROTECTED_PATHS
 )
 _SAFE_SHELL_COMMANDS = frozenset({
-    "cd", "date", "dir", "echo", "hostname", "ls", "printf", "pwd",
-    "type", "ver", "where", "which", "whoami",
+    "cd", "date", "echo", "hostname", "printf", "pwd", "ver", "whoami",
 })
 _SAFE_GIT_SUBCOMMANDS = frozenset({"describe", "status"})
 _SHELL_META = re.compile(r"[\r\n;&|<>\x60$()]|\u0000")
@@ -89,14 +88,9 @@ def _is_safe_shell_command(command: object) -> bool:
     if executable in _SAFE_SHELL_COMMANDS:
         return True
     if executable == "git":
-        # Only read-only inspection subcommands are allowlisted.
-        subcommand = next((token.casefold() for token in tokens[1:]
-                           if not token.startswith("-")), "")
-        if subcommand not in _SAFE_GIT_SUBCOMMANDS:
-            return False
-        mutating_flags = {"-d", "-D", "-m", "-M", "-c", "--delete", "--move",
-                          "--copy", "--force", "-f", "--output"}
-        return not any(token.casefold() in mutating_flags for token in tokens[1:])
+        # Permit only literal no-argument inspection commands. Git options and
+        # path arguments can reveal protected content or redirect output.
+        return len(tokens) == 2 and tokens[1].casefold() in _SAFE_GIT_SUBCOMMANDS
     if executable in {"python", "python3", "py"}:
         return all(token.casefold() in {"-v", "-vv", "-version", "--version"}
                    for token in tokens[1:])
