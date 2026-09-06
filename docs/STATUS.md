@@ -96,6 +96,16 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   candidate test commands are routed through the no-network Docker sandbox with only the
   candidate worktree mounted; supervised self-mod remains backward-compatible without an
   image. Regression coverage is in `tests/test_m0_selfmod_sandbox.py`.
+- **M0 inbound sender boundary (issue #150):** Telegram, Slack, Discord, and email
+  require an explicit per-surface owner allowlist before an inbound message can reach
+  `hive.ask()`. Email also requires a trusted ingress sender header matching `From` and
+  set only after provider-verified DMARC alignment. Refused input is tagged `untrusted` then discarded. Telegram additionally
+  requires its Bot API webhook secret and shares the 1 MiB body cap used by the other
+  webhooks. Missing allowlist/secret configuration is reported by `/config/validate`
+  and fails closed at startup.
+  `HIVE_PRODUCTION=true` rejects the default gateway secret; the wider HIVE-009 content
+  envelope remains an M2 follow-up.
+  Focused configuration and webhook coverage passes locally.
 - **M0 command/file containment (issue #122):** the approval bridge classifies shell
   commands fail-closed, allowing only a small read-only command set and routing
   unknown, malformed, chained, or destructive forms to approval. Protected paths are

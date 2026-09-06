@@ -802,9 +802,36 @@ class HiveOS:
               router: ModelRouter | None = None) -> "HiveOS":
         """Construct + wire every subsystem. Inject `router` to bypass the network in tests."""
         cfg = config or HiveConfig.from_env()
+        if cfg.production_mode and (not cfg.secret.strip() or cfg.secret == "change_me"):
+            raise RuntimeError(
+                "HIVE_PRODUCTION=true requires a non-empty HIVE_SECRET different from 'change_me'"
+            )
         if cfg.autonomy_enabled and not cfg.approver_key:
             raise RuntimeError(
                 "HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY to be configured"
+            )
+        if cfg.telegram_token and not cfg.telegram_webhook_secret:
+            raise RuntimeError(
+                "TELEGRAM_BOT_TOKEN requires TELEGRAM_WEBHOOK_SECRET to be configured"
+            )
+        if cfg.telegram_token and not (
+            cfg.telegram_allowed_user_ids or cfg.telegram_allowed_chat_ids
+        ):
+            raise RuntimeError(
+                "TELEGRAM_BOT_TOKEN requires HIVE_TELEGRAM_ALLOWED_USER_IDS or "
+                "HIVE_TELEGRAM_ALLOWED_CHAT_IDS to be configured"
+            )
+        if cfg.slack_signing_secret and not cfg.slack_allowed_user_ids:
+            raise RuntimeError(
+                "HIVE_SLACK_SIGNING_SECRET requires HIVE_SLACK_ALLOWED_USER_IDS to be configured"
+            )
+        if cfg.discord_public_key and not cfg.discord_allowed_user_ids:
+            raise RuntimeError(
+                "HIVE_DISCORD_PUBLIC_KEY requires HIVE_DISCORD_ALLOWED_USER_IDS to be configured"
+            )
+        if cfg.smtp_webhook_secret and not cfg.email_allowed_senders:
+            raise RuntimeError(
+                "HIVE_SMTP_WEBHOOK_SECRET requires HIVE_EMAIL_ALLOWED_SENDERS to be configured"
             )
         if cfg.autonomous_selfmod_enabled and not cfg.sandbox_image:
             raise RuntimeError(

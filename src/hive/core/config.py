@@ -30,6 +30,11 @@ def _maybe_load_dotenv(root: Path) -> None:
         pass
 
 
+def _parse_csv_env(name: str) -> frozenset[str]:
+    """Return non-empty, trimmed values from a comma-separated environment variable."""
+    return frozenset(value.strip() for value in os.getenv(name, "").split(",") if value.strip())
+
+
 @dataclass(frozen=True, slots=True)
 class HiveConfig:
     root: Path
@@ -59,6 +64,7 @@ class HiveConfig:
     host: str
     port: int
     secret: str
+    production_mode: bool
     # Memory
     mnemosyne_mcp_url: str
     mnemosyne_home: Path  # local SQLite path for the Mnemosyne provider
@@ -73,6 +79,8 @@ class HiveConfig:
     # Telegram surface (optional)
     telegram_token: str
     telegram_webhook_secret: str
+    telegram_allowed_user_ids: frozenset[str]
+    telegram_allowed_chat_ids: frozenset[str]
     # Self-mod sandbox: optional for supervised changes, mandatory for autonomous self-mod.
     sandbox_image: str
     # MCP stdio servers to load at startup: ';'-separated command lines (A2)
@@ -110,6 +118,11 @@ class HiveConfig:
     discord_application_id: str   # HIVE_DISCORD_APP_ID: application id for webhook URL
     smtp_from: str                # HIVE_SMTP_FROM: From address used when sending replies
     smtp_webhook_secret: str      # HIVE_SMTP_WEBHOOK_SECRET: shared secret for /email/webhook
+    # Inbound sender allowlists.  An enabled surface with an empty relevant
+    # allowlist is rejected at startup rather than accepting every sender.
+    slack_allowed_user_ids: frozenset[str]
+    discord_allowed_user_ids: frozenset[str]
+    email_allowed_senders: frozenset[str]
     # Self-mod proactive: run self_diagnose every N heartbeat ticks (0 = disabled)
     selfmod_proactive_interval: int  # HIVE_SELFMOD_PROACTIVE_INTERVAL
     # Self-mod safety pre-flight checks (Pillar 4): run static checks before opening
@@ -175,6 +188,7 @@ class HiveConfig:
             host=os.getenv("HIVE_HOST", "0.0.0.0"),
             port=int(os.getenv("HIVE_PORT", "8088")),
             secret=os.getenv("HIVE_SECRET", "change_me"),
+            production_mode=os.getenv("HIVE_PRODUCTION", "false").lower() == "true",
             mnemosyne_mcp_url=os.getenv("MNEMOSYNE_MCP_URL", ""),
             mnemosyne_home=Path(os.getenv("MNEMOSYNE_HOME", str(data_dir / "mnemosyne"))),
             obsidian_vault=Path(os.getenv("OBSIDIAN_VAULT_PATH", str(root / "vault"))),
@@ -187,6 +201,8 @@ class HiveConfig:
             github_owner=os.getenv("HIVE_GITHUB_OWNER", ""),
             telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", ""),
+            telegram_allowed_user_ids=_parse_csv_env("HIVE_TELEGRAM_ALLOWED_USER_IDS"),
+            telegram_allowed_chat_ids=_parse_csv_env("HIVE_TELEGRAM_ALLOWED_CHAT_IDS"),
             sandbox_image=os.getenv("HIVE_SANDBOX_IMAGE", ""),
             mcp_servers=tuple(s.strip() for s in os.getenv("HIVE_MCP_SERVERS", "").split(";")
                               if s.strip()),
@@ -215,6 +231,11 @@ class HiveConfig:
             discord_application_id=os.getenv("HIVE_DISCORD_APP_ID", ""),
             smtp_from=os.getenv("HIVE_SMTP_FROM", ""),
             smtp_webhook_secret=os.getenv("HIVE_SMTP_WEBHOOK_SECRET", ""),
+            slack_allowed_user_ids=_parse_csv_env("HIVE_SLACK_ALLOWED_USER_IDS"),
+            discord_allowed_user_ids=_parse_csv_env("HIVE_DISCORD_ALLOWED_USER_IDS"),
+            email_allowed_senders=frozenset(
+                value.casefold() for value in _parse_csv_env("HIVE_EMAIL_ALLOWED_SENDERS")
+            ),
             selfmod_proactive_interval=int(os.getenv("HIVE_SELFMOD_PROACTIVE_INTERVAL", "10")),
             selfmod_enable_safety_checks=os.getenv("HIVE_SELFMOD_ENABLE_SAFETY_CHECKS", "true").lower() == "true",
             selfmod_safety_max_files=int(os.getenv("HIVE_SELFMOD_SAFETY_MAX_FILES", "20")),
@@ -240,6 +261,35 @@ class HiveConfig:
             issues.append("HIVE_EXEC_MODEL is empty")
         if self.secret == "change_me":
             issues.append("HIVE_SECRET is the default 'change_me' — change it for production")
+        if self.production_mode and (not self.secret.strip() or self.secret == "change_me"):
+            issues.append(
+                "HIVE_PRODUCTION=true requires a non-empty HIVE_SECRET different from 'change_me'"
+            )
+        if self.autonomy_enabled and not self.approver_key:
+            issues.append(
+                "HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY to be configured"
+            )
+        if self.telegram_token and not self.telegram_webhook_secret:
+            issues.append("TELEGRAM_BOT_TOKEN requires TELEGRAM_WEBHOOK_SECRET to be configured")
+        if self.telegram_token and not (
+            self.telegram_allowed_user_ids or self.telegram_allowed_chat_ids
+        ):
+            issues.append(
+                "TELEGRAM_BOT_TOKEN requires HIVE_TELEGRAM_ALLOWED_USER_IDS or "
+                "HIVE_TELEGRAM_ALLOWED_CHAT_IDS to be configured"
+            )
+        if self.slack_signing_secret and not self.slack_allowed_user_ids:
+            issues.append(
+                "HIVE_SLACK_SIGNING_SECRET requires HIVE_SLACK_ALLOWED_USER_IDS to be configured"
+            )
+        if self.discord_public_key and not self.discord_allowed_user_ids:
+            issues.append(
+                "HIVE_DISCORD_PUBLIC_KEY requires HIVE_DISCORD_ALLOWED_USER_IDS to be configured"
+            )
+        if self.smtp_webhook_secret and not self.email_allowed_senders:
+            issues.append(
+                "HIVE_SMTP_WEBHOOK_SECRET requires HIVE_EMAIL_ALLOWED_SENDERS to be configured"
+            )
         if self.port < 1 or self.port > 65535:
             issues.append(f"HIVE_PORT={self.port} is out of range")
         if self.daily_call_cap < 1:
@@ -308,8 +358,10 @@ class HiveConfig:
         }
 
     def is_production(self) -> bool:
-        """Heuristic: True when the secret is non-default and the host is not loopback."""
-        return self.secret != "change_me" and self.host not in ("127.0.0.1", "localhost")
+        """Return explicit production mode or the legacy non-loopback heuristic."""
+        return self.production_mode or (
+            self.secret != "change_me" and self.host not in ("127.0.0.1", "localhost")
+        )
 
     def to_safe_dict(self) -> dict:
         """Return config as a dict with all secret fields redacted."""

@@ -12,7 +12,8 @@ from fastapi import Header, HTTPException
 
 
 def token_ok(token: str | None, secret: str) -> bool:
-    return token is not None and hmac.compare_digest(token, secret)
+    # An empty configured secret must never authenticate an empty header.
+    return bool(secret and secret.strip()) and token is not None and hmac.compare_digest(token, secret)
 
 
 def make_auth_dependency(secret: str):

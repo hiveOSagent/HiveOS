@@ -74,12 +74,15 @@ class EmailChannel(ChannelAdapter):
             user_id=chat_id,
             message_id=message_id,
             platform="email",
-            raw={"in_reply_to": in_reply_to, "subject": subject},
+            raw={
+                "in_reply_to": in_reply_to,
+                "subject": subject,
+            },
         )
 
     def verify_signature(self, headers: Mapping[str, str], body: bytes) -> bool:
         # v1: gateway authenticates POSTs to /email/webhook via X-Webhook-Secret;
-        # DKIM is out of scope. Always accept parsed messages.
+        # the trusted ingress supplies the provider-verified sender header.
         return True
 
     async def send(self, message: OutgoingMessage) -> SendResult:

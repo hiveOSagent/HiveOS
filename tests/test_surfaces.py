@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 
 import pytest
 from starlette.testclient import TestClient
@@ -194,7 +195,7 @@ class _FakeChannel:
         msg = update.get("message")
         if not msg or "text" not in msg:
             return None
-        return MessageEvent(text=msg["text"], chat_id="42", message_id="1",
+        return MessageEvent(text=msg["text"], chat_id="42", user_id="7", message_id="1",
                             platform="fake")
 
     async def send(self, message):
@@ -203,19 +204,35 @@ class _FakeChannel:
 
 
 def test_telegram_webhook_round_trip(tmp_path):
-    hive = HiveOS.build(_config(tmp_path), router=_StreamRouter())  # ask() -> "full"
+    cfg = dataclasses.replace(
+        _config(tmp_path),
+        telegram_token="token",
+        telegram_webhook_secret="webhook-secret",
+        telegram_allowed_user_ids=frozenset({"7"}),
+    )
+    hive = HiveOS.build(cfg, router=_StreamRouter())  # ask() -> "full"
     ch = _FakeChannel()
     with TestClient(create_app(hive, telegram=ch)) as c:
-        r = c.post("/telegram/webhook", json={"message": {"text": "hi there"}})
+        r = c.post("/telegram/webhook", json={"message": {"text": "hi there"}}, headers={
+            "X-Telegram-Bot-Api-Secret-Token": "webhook-secret",
+        })
         assert r.status_code == 200 and r.json()["handled"] is True
         assert ch.sent and ch.sent[0].chat_id == "42"
 
 
 def test_telegram_webhook_ignores_nonactionable(tmp_path):
-    hive = HiveOS.build(_config(tmp_path), router=_StreamRouter())
+    cfg = dataclasses.replace(
+        _config(tmp_path),
+        telegram_token="token",
+        telegram_webhook_secret="webhook-secret",
+        telegram_allowed_user_ids=frozenset({"7"}),
+    )
+    hive = HiveOS.build(cfg, router=_StreamRouter())
     ch = _FakeChannel()
     with TestClient(create_app(hive, telegram=ch)) as c:
-        r = c.post("/telegram/webhook", json={"edited_message": {"text": "x"}})
+        r = c.post("/telegram/webhook", json={"edited_message": {"text": "x"}}, headers={
+            "X-Telegram-Bot-Api-Secret-Token": "webhook-secret",
+        })
         assert r.json()["handled"] is False
         assert not ch.sent
 

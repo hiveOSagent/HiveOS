@@ -14,6 +14,9 @@ Verifies:
 """
 from __future__ import annotations
 
+# The Hive imports intentionally follow environment bootstrap below.
+# ruff: noqa: E402, I001
+
 import asyncio
 import hashlib
 import hmac
@@ -36,9 +39,15 @@ os.environ.setdefault("HIVE_SMTP_HOST", "smtp.smoke")
 os.environ.setdefault("HIVE_SMTP_FROM", "hive@smoke")
 os.environ.setdefault("HIVE_SMTP_WEBHOOK_SECRET", "smoke-email-secret")
 
-from fastapi.testclient import TestClient
-from hive.gateway.app import create_app
-from hive.gateway.channels.base import ChannelAdapter, MessageEvent, OutgoingMessage, SendResult
+from fastapi.testclient import TestClient  # noqa: E402
+
+from hive.gateway.app import create_app  # noqa: E402
+from hive.gateway.channels.base import (  # noqa: E402
+    ChannelAdapter,
+    MessageEvent,
+    OutgoingMessage,
+    SendResult,
+)
 
 
 class FakeHive:
@@ -56,6 +65,7 @@ class FakeHive:
     config.smtp_pass = ""
     config.smtp_from = "hive@smoke"
     config.smtp_webhook_secret = "smoke-email-secret"
+    config.email_allowed_senders = frozenset({"alice@example.com"})
     config.api_key = "smoke-gateway-key"
 
     async def load_mcp_servers(self): pass
@@ -164,10 +174,14 @@ async def main() -> int:
             b"hello hive from email"
         )
         r = client.post("/email/webhook", content=raw_email,
-                        headers={"X-Webhook-Secret": "smoke-email-secret"})
+                        headers={
+                            "X-Webhook-Secret": "smoke-email-secret",
+                            "X-Verified-Sender": "alice@example.com",
+                        })
         assert r.status_code == 200, f"email valid expected 200, got {r.status_code}: {r.text}"
         body_json = r.json()
         assert body_json.get("ok") is True, f"unexpected body: {body_json}"
+        assert body_json.get("handled") is True, f"email was not handled: {body_json}"
         print(f"  TEST 6 — valid message:    HTTP {r.status_code}, ask() invoked  [OK]")
 
     print("\n  [OK] slack / discord / email smoke complete")
