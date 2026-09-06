@@ -26,12 +26,13 @@ def make_auth_dependency(secret: str):
     return require_token
 
 
-def make_approver_dependency(approver_key: str):
-    """FastAPI dependency that accepts only the out-of-band approver key."""
+def make_approver_dependency(approver_key: str, *, principal: str = "human:out_of_band"):
+    """FastAPI dependency that accepts the key and returns its audit principal."""
 
-    async def require_approver(x_hive_token: str | None = Header(default=None)) -> None:
+    async def require_approver(x_hive_token: str | None = Header(default=None)) -> str:
         # An empty configured key must never authenticate an empty/missing header.
         if not approver_key or not token_ok(x_hive_token, approver_key):
             raise HTTPException(status_code=401, detail="bad approver token")
+        return principal
 
     return require_approver

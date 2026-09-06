@@ -113,6 +113,12 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   includes every bypass URL listed in the issue and mixed public/private DNS answers.
   Response bodies are streamed and capped at 12,000 bytes before decoding and
   returning content to the model.
+- **M0 audit integrity:** audit rows now carry redacted actor/principal attribution
+  and a versioned SHA-256 chain with restart tamper detection. `GET /audit/verify`
+  exposes integrity evidence to the normal token, while audit purge remains approver
+  protected. Cross-instance writers serialize through SQLite immediate transactions.
+  The chain remains tamper-evident local storage rather than an external immutable
+  anchor against unrestricted database writes.
 - **M0 command/file containment (issue #122):** the approval bridge classifies shell
   commands fail-closed, allowing only a small read-only command set and routing
   unknown, malformed, chained, or destructive forms to approval. Protected paths are
@@ -132,6 +138,13 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   `autonomy_cooldowns` before calling the diagnoser, preserving the cooldown across
   restart. Regression coverage is in `tests/test_m0_approval_persistence.py` and
   `tests/test_self_improve_loop_e2e.py`.
+- **M0 audit integrity boundary:** audit rows now include redacted actor/principal
+  attribution and a SHA-256 hash chain with startup migration for existing SQLite
+  logs. `GET /audit/verify` returns tamper evidence using the normal gateway token;
+  `DELETE /audit/purge` requires `HIVE_APPROVER_KEY`. Retention and explicit clear
+  operations reseal the retained segment. The local chain detects direct row edits or
+  deletions that do not also rewrite its metadata; an external immutable anchor remains
+  necessary against an attacker with unrestricted SQLite write access.
 - **Providers (M8):** Anthropic + Codex adapters behind `LLMAdapter`; `make_adapter(provider)`
   registry; executor switchable via `HIVE_EXEC_PROVIDER` (minimax|anthropic).
 - **Mission Control visibility (M10-a):** Four authenticated gateway endpoints expose runtime

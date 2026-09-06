@@ -249,6 +249,15 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   from executing one rehydrated approval twice. The heartbeat records its
   failure-triggered self-modification cooldown before invoking the diagnoser, so a
   process restart cannot bypass that throttle.
+- **M0 audit integrity boundary:** audit rows carry redacted arguments, actor/principal
+  attribution, and a SHA-256 hash chain persisted in `audit_meta`. `GET /audit/verify`
+  exposes integrity evidence to the normal gateway token, while destructive
+  `DELETE /audit/purge` requires the out-of-band approver credential. Retention and
+  explicit clearing reseal the retained chain segment; direct row edits or deletions
+  that do not also rewrite chain metadata are detected by verification. This is
+  tamper-evident local storage, not a substitute for an external immutable anchor
+  against an attacker with unrestricted SQLite write access. SQLite files receive
+  restrictive owner permissions where the host filesystem supports them.
 - **M0 inbound sender boundary (issue #150):** every enabled inbound channel has two
   checks before a model turn: platform-request authentication and an explicit owner
   allowlist. Telegram requires its Bot API webhook secret plus an allowed user or chat;
@@ -302,6 +311,9 @@ The M0 verification snapshot on 2026-09-05 recorded `pytest -q` as **4151 passed
 The full-suite failures are observed Windows/platform
 assumptions or unrelated baseline tests (Unix `cat`/`bash`/`true`/`printf`, path formatting,
 and unrelated Codex/audit/SOUL checks); they are not used to claim a full-suite pass.
+The M0 audit-integrity slice adds one-time chain migration, restart tamper detection,
+and cross-instance SQLite writer serialization. The chain remains tamper-evident local
+storage, not an external immutable audit anchor.
 Live smokes remain opt-in via `HIVE_LIVE_TEST=1`.
 architecture DAG test (`tests/test_architecture.py`) enforces the `core`-is-leaf invariant
 via static AST scan; CI (`.github/workflows/ci.yml`) runs `ruff check` + compile check +
