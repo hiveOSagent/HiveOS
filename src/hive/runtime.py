@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from hive.agents.board import BoardStore
@@ -148,6 +149,24 @@ class HiveOS:
     edit_pending: dict    # approval_id → Edit; REVIEW-tier edits awaiting human approval
     host_llm: HostLLMBridge
     loop_guard: LoopGuard
+    _gateway_lifecycle_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False,
+    )
+    _gateway_lifespans: int = field(default=0, init=False, repr=False)
+
+    def acquire_gateway_lifespan(self) -> None:
+        """Mark one FastAPI gateway app as using this shared runtime."""
+        with self._gateway_lifecycle_lock:
+            self._gateway_lifespans += 1
+
+    def release_gateway_lifespan(self) -> bool:
+        """Release one gateway app and return whether it owns final shutdown."""
+        with self._gateway_lifecycle_lock:
+            if self._gateway_lifespans <= 0:
+                log.warning("gateway lifespan released without a matching acquire")
+                return False
+            self._gateway_lifespans -= 1
+            return self._gateway_lifespans == 0
 
     async def ask(self, message: str, *, session_id: str = "default",
                   channel_hint: str = "") -> str:
