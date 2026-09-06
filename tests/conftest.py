@@ -9,6 +9,7 @@ from keyring.backend import KeyringBackend
 
 from hive.core.approval import gate as _approval_gate
 from hive.core.approval_enhancements import enhance as _approval_enhance
+from hive.core.redact import clear_registered_secret_values
 import hive.core.config as _config_mod
 
 # Env vars injected by dotenv that tests must not see (tests use their own tmp
@@ -60,6 +61,7 @@ def _reset_globals():
     saved_env = {k: os.environ.get(k) for k in _DOTENV_VARS}
     saved_keyring = keyring.get_keyring()
     keyring.set_keyring(_TestKeyring())
+    clear_registered_secret_values()
     _approval_gate._pending.clear()
     _approval_enhance.configure_persistence(None)
     _approval_enhance.release_kill_switch(released_by="pytest fixture")
@@ -79,3 +81,4 @@ def _reset_globals():
         else:
             os.environ[k] = v
     keyring.set_keyring(saved_keyring)
+    clear_registered_secret_values()

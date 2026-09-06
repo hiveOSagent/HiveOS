@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from hive.core import config, credentials
 from hive.core.types import ToolResult
 from hive.observability.audit import AuditLog
 from hive.tools.base import BaseTool, ToolSpec
@@ -106,6 +107,26 @@ def test_actual_audit_log_never_receives_a_configured_secret(monkeypatch, tmp_pa
 
     assert dispatch.status is DispatchStatus.OK
     assert "synthetic-secret-value" not in json.dumps(audit.recent())
+
+
+def test_keyring_secret_with_an_arbitrary_name_is_redacted_from_tool_output(tmp_path) -> None:
+    cfg = config.HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    config.set_config(cfg)
+    cfg.ensure_dirs()
+    credentials.save("OPAQUE_CREDENTIAL", "synthetic-keyring-secret")
+
+    class EchoKeyringSecret(BaseTool):
+        spec = ToolSpec(name="echo_keyring_secret", description="test-only keyring echo")
+
+        async def execute(self, **_params) -> ToolResult:
+            return ToolResult(tool_name=self.spec.name, content="result=synthetic-keyring-secret")
+
+    dispatch = asyncio.run(
+        ToolExecutor({"echo_keyring_secret": EchoKeyringSecret()}).execute("echo_keyring_secret")
+    )
+
+    assert dispatch.result is not None
+    assert "synthetic-keyring-secret" not in dispatch.result.content
 
 
 def test_direct_web_get_refuses_url_containing_configured_secret(monkeypatch) -> None:

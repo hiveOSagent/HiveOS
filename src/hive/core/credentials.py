@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from hive.core import config
+from hive.core.redact import register_secret_values
 
 log = logging.getLogger("hive.credentials")
 _MANIFEST_VERSION = 2
@@ -118,16 +119,18 @@ def _load() -> dict[str, str]:
     keys = _manifest_keys(raw)
     if keys is None:
         legacy = _legacy_values(raw)
-        return _migrate_legacy(legacy) if legacy else {}
-    keyring = _keyring()
-    values: dict[str, str] = {}
-    try:
-        for key in keys:
-            value = keyring.get_password(_service_name(), key)
-            if value is not None:
-                values[key] = value
-    except Exception as exc:  # noqa: BLE001 - backend exceptions vary by OS
-        raise CredentialStoreError("credential read from the OS keyring failed") from exc
+        values = _migrate_legacy(legacy) if legacy else {}
+    else:
+        keyring = _keyring()
+        values = {}
+        try:
+            for key in keys:
+                value = keyring.get_password(_service_name(), key)
+                if value is not None:
+                    values[key] = value
+        except Exception as exc:  # noqa: BLE001 - backend exceptions vary by OS
+            raise CredentialStoreError("credential read from the OS keyring failed") from exc
+    register_secret_values(values.values())
     return values
 
 
@@ -145,6 +148,7 @@ def save(key: str, value: str) -> None:
         keyring.set_password(_service_name(), key, value)
     except Exception as exc:  # noqa: BLE001 - backend exceptions vary by OS
         raise CredentialStoreError("credential write to the OS keyring failed") from exc
+    register_secret_values((value,))
     _write_manifest(existing_keys + [key])
 
 

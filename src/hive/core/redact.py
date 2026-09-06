@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any
+from typing import Any, Iterable
 
 # Exact-match (case-insensitive) arg/field names whose VALUE is always a secret.
 _SENSITIVE_KEYS = frozenset({
@@ -36,6 +36,7 @@ _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL)
 
 _MASK = "***REDACTED***"
+_REGISTERED_SECRET_VALUES: set[str] = set()
 
 
 def _is_sensitive_name(name: str) -> bool:
@@ -58,10 +59,21 @@ def known_secret_values(env: dict[str, str] | None = None) -> frozenset[str]:
     for exact replacement or containment checks.
     """
     source = os.environ if env is None else env
-    return frozenset(
+    environment_values = (
         value for key, value in source.items()
         if _is_sensitive_name(str(key)) and isinstance(value, str) and value
     )
+    return frozenset((*environment_values, *_REGISTERED_SECRET_VALUES))
+
+
+def register_secret_values(values: Iterable[str]) -> None:
+    """Register credential-store values without retaining their names or logging them."""
+    _REGISTERED_SECRET_VALUES.update(value for value in values if isinstance(value, str) and value)
+
+
+def clear_registered_secret_values() -> None:
+    """Clear registered values; used by test isolation only."""
+    _REGISTERED_SECRET_VALUES.clear()
 
 
 def contains_known_secret(text: str, *, env: dict[str, str] | None = None) -> bool:
