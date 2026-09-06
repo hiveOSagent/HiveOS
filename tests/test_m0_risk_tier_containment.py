@@ -9,6 +9,7 @@ from hive.core.spec_search import (
     Edit,
     EditOp,
     RiskTier,
+    SelfImprovement,
     assign_tier,
     path_requires_review,
     tiered,
@@ -138,3 +139,18 @@ def test_self_modifier_rechecks_git_paths_after_tests():
 
     assert result["ok"] is False
     assert result["stage"] == "protected"
+
+
+def test_human_approved_sensitive_edit_can_use_review_path():
+    async def apply(_worktree: str) -> list[str]:
+        return ["src/hive/core/runtime.py"]
+
+    modifier = SelfModifier(
+        repo_root="/tmp/hiveos-m0-test",
+        run=_git_runner("src/hive/core/runtime.py\n"),
+    )
+    improver = SelfImprovement(modifier)
+    edit = Edit(op=EditOp.PATCH_CODE, summary="approved", apply=apply)
+    result = asyncio.run(improver.apply_approved(edit, dry_run=True))
+
+    assert result.status == "applied"

@@ -504,8 +504,15 @@ class SelfImprovement:
                 "; ".join(f"{r.check}:{r.reason}" for r in failing)[:500],
             )
 
-        result = await self._mod.propose(edit.summary, edit.rationale, edit.apply,
-                                         dry_run=dry_run)
+        propose_approved = getattr(self._mod, "propose_approved", None)
+        if propose_approved is None:
+            # Preserve compatibility with test doubles and older injected
+            # modifiers while the real SelfModifier uses the approved path.
+            result = await self._mod.propose(edit.summary, edit.rationale, edit.apply,
+                                             dry_run=dry_run)
+        else:
+            result = await propose_approved(edit.summary, edit.rationale, edit.apply,
+                                            dry_run=dry_run)
         if not result.get("ok"):
             stage = result.get("stage")
             status = "blocked_protected" if stage == "protected" else "failed"

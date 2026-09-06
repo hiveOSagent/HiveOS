@@ -322,8 +322,8 @@ and unrelated Codex/audit/SOUL checks); they are not used to claim a full-suite 
 The M0 audit-integrity slice adds one-time chain migration, restart tamper detection,
 and cross-instance SQLite writer serialization. The chain remains tamper-evident local
 storage, not an external immutable audit anchor.
-For M0 #147 at commit `33a2b33`, the focused self-modification/risk suite recorded
-**469 passed and 2 failed** on Windows; both failures are existing `_default_run`
+For M0 #147 at commit `5bceed6`, the focused self-modification/risk suite recorded
+**470 passed and 2 failed** on Windows; both failures are existing `_default_run`
 smokes that invoke the unavailable Unix `true` command and are unrelated to this slice.
 `SelfModifier` now validates actual Git paths both after apply and again after tests;
 paths that raise the policy floor are rejected from the AUTO commit path as

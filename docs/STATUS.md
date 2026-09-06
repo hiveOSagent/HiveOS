@@ -125,7 +125,7 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   checks run on every edit payload, and `SelfModifier` verifies callback-reported
   files against the actual Git diff plus untracked files both after apply and after
   tests, rejecting actual sensitive paths from the AUTO commit path. Focused
-  verification at commit `33a2b33` recorded **469 passed and 2 existing
+  verification at commit `5bceed6` recorded **470 passed and 2 existing
   Windows `_default_run` smoke failures** because the environment has no Unix
   `true` command.
 - **M0 command/file containment (issue #122):** the approval bridge classifies shell

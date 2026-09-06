@@ -299,9 +299,11 @@ class SelfModifier:
         return {"removed": removed, "errors": errors}
 
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
-                      *, dry_run: bool = False) -> dict:
+                      *, dry_run: bool = False, approved_review: bool = False) -> dict:
         self._emit(EventType.SELFMOD_START, {"title": title, "dry_run": dry_run})
-        result = await self._propose_inner(title, description, apply_fn, dry_run=dry_run)
+        result = await self._propose_inner(
+            title, description, apply_fn, dry_run=dry_run, approved_review=approved_review,
+        )
         self._emit(EventType.SELFMOD_END, {
             "title": title, "ok": result.get("ok"), "stage": result.get("stage"),
             "branch": result.get("branch"), "dry_run": dry_run,
@@ -315,8 +317,15 @@ class SelfModifier:
             self._history = self._history[-_MAX_HISTORY:]
         return result
 
+    async def propose_approved(self, title: str, description: str,
+                               apply_fn: ApplyFn, *, dry_run: bool = False) -> dict:
+        """Run a human-approved REVIEW edit through the isolated modifier flow."""
+        return await self.propose(
+            title, description, apply_fn, dry_run=dry_run, approved_review=True,
+        )
+
     async def _propose_inner(self, title: str, description: str, apply_fn: ApplyFn,
-                             *, dry_run: bool = False) -> dict:
+                             *, dry_run: bool = False, approved_review: bool = False) -> dict:
         branch = f"hive/auto-{int(time.time())}"
         wt = str(Path(self._root) / ".worktrees" / branch.replace("/", "-"))
 
@@ -354,7 +363,7 @@ class SelfModifier:
                 return {"ok": False, "stage": "protected",
                         "msg": "actual change touches SOUL.md or approval gate — human-only"}
             review_paths = _review_required_paths(changed)
-            if review_paths:
+            if review_paths and not approved_review:
                 return {"ok": False, "stage": "review_required",
                         "msg": "actual change requires REVIEW tier before commit",
                         "review_paths": review_paths, "changed": changed}
@@ -386,7 +395,7 @@ class SelfModifier:
                 return {"ok": False, "stage": "protected",
                         "msg": "tests changed a protected file — human-only"}
             review_paths = _review_required_paths(final_changed)
-            if review_paths:
+            if review_paths and not approved_review:
                 return {"ok": False, "stage": "review_required",
                         "msg": "final candidate change requires REVIEW tier before commit",
                         "review_paths": review_paths, "changed": final_changed}
