@@ -131,7 +131,8 @@ class ToolExecutor:
         # Reject writes targeting sensitive paths before touching the gate.
         for param in ("path", "file", "filename", "destination"):
             if param in args:
-                safety_err = check_path(str(args[param]))
+                operation = "read" if name == "read_file" and param == "path" else "write"
+                safety_err = check_path(str(args[param]), operation=operation)
                 if safety_err:
                     return self._finish(name, args, ToolDispatch(
                         DispatchStatus.ERROR, error=safety_err))
@@ -182,7 +183,8 @@ class ToolExecutor:
         # Recheck path safety even after approval — approval proves intent, not safety.
         for param in ("path", "file", "filename", "destination"):
             if param in args:
-                safety_err = check_path(str(args[param]))
+                operation = "read" if name == "read_file" and param == "path" else "write"
+                safety_err = check_path(str(args[param]), operation=operation)
                 if safety_err:
                     return self._finish(name, args, ToolDispatch(
                         DispatchStatus.ERROR, error=safety_err))

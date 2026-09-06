@@ -272,6 +272,13 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   protected changes, and prevents actual REVIEW-floor paths from using the AUTO
   path. A human-approved REVIEW edit still follows the isolated worktree/test/PR
   flow and cannot bypass protected-file checks.
+- **M0 behavioral regression boundary (issue #143):** `tests/test_m0_behavioral_regressions.py`
+  executes the production approval classifier, file-safety checks, `ReadFile`,
+  `LocalShellProvider`, and self-modification runner against real subprocesses
+  and a scratch Git repository. It proves that repository control-plane mutations,
+  Git/workflow descendants, user credential files, and the approver credential
+  remain contained. CI runs this harness as a dedicated read-only job after the
+  normal test matrix.
 - **M0 inbound sender boundary (issue #150):** every enabled inbound channel has two
   checks before a model turn: platform-request authentication and an explicit owner
   allowlist. Telegram requires its Bot API webhook secret plus an allowed user or chat;
@@ -319,12 +326,15 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   (`ProtectSystem=strict`, non-root). See `deploy/README.md`.
 
 ## 11. Tests
-The M0 verification snapshot on 2026-09-05 recorded `pytest -q` as **4151 passed,
-19 failed, 18 skipped, 12 warnings** on Windows. The focused M0 #120/#121 tests passed
-(`14 passed`), as did the affected approval/config/autonomy/sandbox suites (`290 passed`).
-The full-suite failures are observed Windows/platform
-assumptions or unrelated baseline tests (Unix `cat`/`bash`/`true`/`printf`, path formatting,
-and unrelated Codex/audit/SOUL checks); they are not used to claim a full-suite pass.
+The fresh verification on 2026-09-06 reports **4275 passed, 18 failed, 18 skipped,
+12 warnings** from `pytest -q` on Windows. The new M0 #143 behavioral harness passes
+**11 tests**; its affected M0/tool/self-mod verification reports **269 passed,
+2 skipped, 2 known Windows baseline failures**. The full-suite failures are outside
+the changed files and are observed Windows/platform assumptions or unrelated baseline
+tests (Unix `cat`/`bash`/`true`/`printf`, path/CRLF formatting, and existing
+adapter/bridge checks); they are not used to claim a full-suite pass. CI now runs the
+behavioral harness in a dedicated read-only `m0-behavioral-regressions` job after the
+normal test matrix.
 The M0 audit-integrity slice adds one-time chain migration, restart tamper detection,
 and cross-instance SQLite writer serialization. The chain remains tamper-evident local
 storage, not an external immutable audit anchor.
