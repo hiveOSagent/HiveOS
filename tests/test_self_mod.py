@@ -636,14 +636,14 @@ def test_wave4d_history_after_two_proposals_has_two_entries():
 # --- Wave 4I additional tests ---------------------------------------------------
 
 async def _apply_multiple(_wt):
-    return ["src/hive/llm/pricing.py", "src/hive/core/types.py", "tests/test_new.py"]
+    return ["src/hive/llm/pricing.py", "src/hive/llm/credential_pool.py", "tests/test_new.py"]
 
 
 def _runner_multiple():
     async def run(cmd, cwd=None):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
         if "git diff --name-only" in cmd_str:
-            return 0, "src/hive/llm/pricing.py\nsrc/hive/core/types.py\n"
+            return 0, "src/hive/llm/pricing.py\nsrc/hive/llm/credential_pool.py\n"
         if "git ls-files --others" in cmd_str:
             return 0, "tests/test_new.py\n"
         if "git rev-parse" in cmd_str:

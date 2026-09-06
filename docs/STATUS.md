@@ -123,8 +123,9 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   path-based `REVIEW` floor for core/tools/gateway, Git/workflow, and project
   configuration paths. `EDIT_DOCS` rejects non-document targets, dangerous-pattern
   checks run on every edit payload, and `SelfModifier` verifies callback-reported
-  files against the actual Git diff plus untracked files before testing or pushing.
-  Focused verification at commit `e33f411` recorded **467 passed and 2 existing
+  files against the actual Git diff plus untracked files both after apply and after
+  tests, rejecting actual sensitive paths from the AUTO commit path. Focused
+  verification at commit `33a2b33` recorded **469 passed and 2 existing
   Windows `_default_run` smoke failures** because the environment has no Unix
   `true` command.
 - **M0 command/file containment (issue #122):** the approval bridge classifies shell
