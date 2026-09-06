@@ -113,6 +113,12 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   includes every bypass URL listed in the issue and mixed public/private DNS answers.
   Response bodies are streamed and capped at 12,000 bytes before decoding and
   returning content to the model.
+- **M0 audit integrity:** audit rows now carry redacted actor/principal attribution
+  and a versioned SHA-256 chain with restart tamper detection. `GET /audit/verify`
+  exposes integrity evidence to the normal token, while audit purge remains approver
+  protected. Cross-instance writers serialize through SQLite immediate transactions.
+  The chain remains tamper-evident local storage rather than an external immutable
+  anchor against unrestricted database writes.
 - **M0 command/file containment (issue #122):** the approval bridge classifies shell
   commands fail-closed, allowing only a small read-only command set and routing
   unknown, malformed, chained, or destructive forms to approval. Protected paths are

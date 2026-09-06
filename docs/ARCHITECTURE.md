@@ -311,6 +311,9 @@ The M0 verification snapshot on 2026-09-05 recorded `pytest -q` as **4151 passed
 The full-suite failures are observed Windows/platform
 assumptions or unrelated baseline tests (Unix `cat`/`bash`/`true`/`printf`, path formatting,
 and unrelated Codex/audit/SOUL checks); they are not used to claim a full-suite pass.
+The M0 audit-integrity slice adds one-time chain migration, restart tamper detection,
+and cross-instance SQLite writer serialization. The chain remains tamper-evident local
+storage, not an external immutable audit anchor.
 Live smokes remain opt-in via `HIVE_LIVE_TEST=1`.
 architecture DAG test (`tests/test_architecture.py`) enforces the `core`-is-leaf invariant
 via static AST scan; CI (`.github/workflows/ci.yml`) runs `ruff check` + compile check +
