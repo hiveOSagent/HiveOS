@@ -433,7 +433,7 @@ def test_web_get_blocks_ssrf_via_redirect():
     from hive.tools.builtins import _check_redirect
     mock_response = httpx.Response(302, headers={"location": "http://192.168.1.1/secret"})
     with pytest.raises(ValueError, match="SSRF redirect blocked"):
-        _check_redirect(mock_response)
+        asyncio.run(_check_redirect(mock_response))
 
 
 def test_check_redirect_allows_public_location():
@@ -441,7 +441,131 @@ def test_check_redirect_allows_public_location():
     import httpx
     from hive.tools.builtins import _check_redirect
     mock_response = httpx.Response(302, headers={"location": "https://example.com/page"})
-    _check_redirect(mock_response)  # Should not raise
+    asyncio.run(_check_redirect(mock_response))  # Should not raise
+
+
+def test_async_web_get_response_hook_accepts_a_normal_response():
+    import httpx
+    from hive.tools.builtins import _check_redirect
+
+    async def request() -> int:
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, text="ok"))
+        async with httpx.AsyncClient(
+            transport=transport, event_hooks={"response": [_check_redirect]}
+        ) as client:
+            return (await client.get("https://example.test/")).status_code
+
+    assert asyncio.run(request()) == 200
+
+
+def test_check_redirect_resolves_protocol_relative_location():
+    import httpx
+    from hive.tools.builtins import _check_redirect
+
+    request = httpx.Request("GET", "https://example.com/start")
+    mock_response = httpx.Response(
+        302,
+        headers={"location": "//192.168.1.1/secret"},
+        request=request,
+    )
+    with pytest.raises(ValueError, match="SSRF redirect blocked"):
+        asyncio.run(_check_redirect(mock_response))
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:8000/x",
+        "http://0.0.0.0:8000/x",
+        "http://[::ffff:127.0.0.1]/x",
+        "http://2130706433/",
+        "http://0177.0.0.1/",
+        "http://0x7f000001/",
+        "http://127.0.0.1.nip.io/",
+        "http://metadata.google.internal/latest/meta-data/",
+        "http://100.64.0.1/",
+        "http://192.0.2.1/",
+        "http://198.18.0.1/",
+        "http://224.0.0.1/",
+        "http://[::]/",
+    ],
+)
+def test_validate_url_blocks_all_known_ssrf_encodings(monkeypatch, url):
+    """Every issue #149 bypass is rejected before an HTTP request is made."""
+    import socket
+    from hive.tools import builtins as builtins_mod
+
+    if "nip.io" in url:
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda *args, **kwargs: [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))
+            ],
+        )
+    with pytest.raises(ValueError, match="Blocked"):
+        builtins_mod._validate_url(url)
+
+
+def test_validate_url_blocks_when_any_dns_answer_is_private(monkeypatch):
+    import socket
+    from hive.tools import builtins as builtins_mod
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.7", 0)),
+        ],
+    )
+    with pytest.raises(ValueError, match="Blocked .*address"):
+        builtins_mod._validate_url("https://example.test/")
+
+
+def test_pinned_network_backend_revalidates_and_pins_connection(monkeypatch):
+    from hive.tools import builtins as builtins_mod
+
+    calls = []
+
+    class _FakeBackend:
+        async def connect_tcp(self, host, port, **kwargs):
+            calls.append((host, port))
+            return "stream"
+
+        async def connect_unix_socket(self, path, **kwargs):
+            return "unix-stream"
+
+        async def sleep(self, seconds):
+            return None
+
+    monkeypatch.setattr(
+        builtins_mod,
+        "_resolve_host_addresses",
+        lambda host, port: ("93.184.216.34", "93.184.216.35"),
+    )
+    backend = builtins_mod._PinnedNetworkBackend()
+    backend._backend = _FakeBackend()
+    result = asyncio.run(backend.connect_tcp("example.test", 443))
+    assert result == "stream"
+    assert calls == [("93.184.216.34", 443)]
+
+
+def test_web_get_response_reader_stops_at_the_output_budget():
+    import httpx
+    from hive.tools.builtins import _MAX_WEB_GET_BYTES, _read_limited_response
+
+    async def read() -> tuple[str, bool]:
+        transport = httpx.MockTransport(
+            lambda _request: httpx.Response(200, content=b"x" * (_MAX_WEB_GET_BYTES + 1))
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            async with client.stream("GET", "https://example.test/") as response:
+                return await _read_limited_response(response)
+
+    content, truncated = asyncio.run(read())
+    assert truncated is True
+    assert content == "x" * _MAX_WEB_GET_BYTES
 
 
 # --- Task 1: BaseTool.to_openai_function() -------------------------------------

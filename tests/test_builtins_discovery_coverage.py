@@ -246,20 +246,32 @@ def test_audit_repo_returns_safe_none_when_http_fails():
 # ===========================================================================
 
 def test_web_get_returns_response_text_on_valid_url():
-    """WebGet.execute() with a valid URL returns r.text[:12_000] (lines 137-144)."""
+    """WebGet.execute() streams a valid response and returns its text."""
     tool = WebGet()
 
     class _Resp:
         is_success = True
-        text = "hello from the web"
+        encoding = "utf-8"
+
+        async def aiter_bytes(self, chunk_size):
+            assert chunk_size == 12_000
+            yield b"hello from the web"
+
+    class _Stream:
+        async def __aenter__(self):
+            return _Resp()
+
+        async def __aexit__(self, *a):
+            return None
 
     class _Client:
         def __init__(self, *a, **kw): pass
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return None
-        async def get(self, url):
+        def stream(self, method, url):
+            assert method == "GET"
             assert url.startswith("http")
-            return _Resp()
+            return _Stream()
 
     import httpx as _httpx
     import unittest.mock
@@ -276,14 +288,25 @@ def test_web_get_returns_failure_on_http_error_status():
 
     class _Resp:
         is_success = False
-        text = "forbidden"
+        encoding = "utf-8"
+
+        async def aiter_bytes(self, chunk_size):
+            yield b"forbidden"
+
+    class _Stream:
+        async def __aenter__(self):
+            return _Resp()
+
+        async def __aexit__(self, *a):
+            return None
 
     class _Client:
         def __init__(self, *a, **kw): pass
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return None
-        async def get(self, url):
-            return _Resp()
+        def stream(self, method, url):
+            assert method == "GET"
+            return _Stream()
 
     import httpx as _httpx
     import unittest.mock
