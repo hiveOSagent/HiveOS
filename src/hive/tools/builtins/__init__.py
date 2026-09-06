@@ -18,10 +18,12 @@ from typing import Any
 import httpcore
 import httpx
 
+from hive.core.redact import contains_known_secret, redact_known_secrets
 from hive.core.types import ToolResult
 from hive.tools import discovery as _discovery
 from hive.tools import introspect as _introspect
 from hive.tools.base import BaseTool, ToolSpec
+from hive.tools.file_safety import check_path
 from hive.tools.registry import ToolRegistry
 from hive.tools.shell_provider import LocalShellProvider, ShellProvider
 
@@ -220,12 +222,11 @@ class ReadFile(BaseTool):
 
     async def execute(self, **params: Any) -> ToolResult:
         path = str(params.get("path", ""))
-        from hive.tools.file_safety import check_path
-        safety_err = check_path(path, operation="read")
-        if safety_err:
-            return ToolResult(tool_name="read_file", content=safety_err, success=False)
+        error = check_path(path, operation="read")
+        if error:
+            return ToolResult(tool_name="read_file", content=error, success=False)
         text = Path(path).read_text(encoding="utf-8", errors="replace")[:20_000]
-        return ToolResult(tool_name="read_file", content=text)
+        return ToolResult(tool_name="read_file", content=redact_known_secrets(text))
 
 
 class WriteFile(BaseTool):
@@ -280,7 +281,7 @@ class Shell(BaseTool):
     async def execute(self, **params: Any) -> ToolResult:
         cmd = str(params.get("cmd", ""))
         result = await self._provider.run(cmd)
-        return ToolResult(tool_name="shell", content=result.stdout[:8_000],
+        return ToolResult(tool_name="shell", content=redact_known_secrets(result.stdout[:8_000]),
                           success=result.returncode == 0)
 
 
@@ -292,6 +293,9 @@ class WebGet(BaseTool):
 
     async def execute(self, **params: Any) -> ToolResult:
         url = str(params.get("url", ""))
+        if contains_known_secret(url):
+            return ToolResult(tool_name="web_get", content="[blocked: URL contains a configured secret]",
+                              success=False)
         try:
             await asyncio.to_thread(_validate_url, url)
         except ValueError as exc:
@@ -309,7 +313,7 @@ class WebGet(BaseTool):
                     content, truncated = await _read_limited_response(r)
                     if truncated:
                         content += "\n[response truncated at 12000 bytes]"
-                    return ToolResult(tool_name="web_get", content=content,
+                    return ToolResult(tool_name="web_get", content=redact_known_secrets(content),
                                       success=r.is_success)
         except ValueError as exc:
             return ToolResult(tool_name="web_get", content=f"[blocked: {exc}]", success=False)

@@ -33,6 +33,7 @@ _HOME_SENSITIVE_RELATIVE = frozenset({
     ".pypirc",
     ".git-credentials",
 })
+_SENSITIVE_READ_SUFFIXES = (".key", ".pem")
 
 
 def _real(p: str) -> str:
@@ -142,6 +143,32 @@ def is_write_denied(path: str) -> bool:
     return _repo_sensitive(path) or _home_sensitive(path) or _real_key(path) in _DENIED_WRITE_PATH_KEYS
 
 
+def _sensitive_read_key(path_key: str) -> bool:
+    """Match secret-bearing files by normalized path rather than the CWD."""
+    normalized = path_key.removeprefix("./")
+    parts = tuple(part for part in normalized.split("/") if part)
+    name = parts[-1] if parts else ""
+    return (
+        _sensitive_repo_relative(normalized)
+        or name == "credentials.json"
+        or name == ".env"
+        or name.startswith(".env.")
+        or name.endswith(_SENSITIVE_READ_SUFFIXES)
+        or ".ssh" in parts
+    )
+
+
+def is_read_denied(path: str) -> bool:
+    """True if reading a secret-bearing path is forbidden to a tool call."""
+    expanded = os.path.expanduser(path)
+    return (
+        _repo_sensitive(expanded)
+        or _home_sensitive(expanded)
+        or _sensitive_read_key(_path_key(expanded))
+        or _sensitive_read_key(_real_key(expanded))
+    )
+
+
 def has_traversal(path: str) -> bool:
     """True if the path contains directory traversal sequences (..)."""
     p = Path(path)
@@ -170,7 +197,7 @@ def check_path(path: str, *, operation: str = "write") -> str | None:
     """Return an error string if `path` is off-limits, else None."""
     if has_traversal(path):
         return f"path traversal not permitted: {path!r}"
-    if operation == "read" and (_repo_sensitive(path) or _home_sensitive(path)):
+    if operation == "read" and is_read_denied(path):
         return f"reading {path!r} is not permitted (sensitive path)"
     if operation in ("write", "delete", "move"):
         if is_write_denied(path):

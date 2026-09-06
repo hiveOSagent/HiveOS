@@ -10,8 +10,10 @@ DAG: core leaf (stdlib only).
 """
 from __future__ import annotations
 
+import os
 import re
-from typing import Any
+from typing import Any, Iterable
+from urllib.parse import quote, quote_plus, unquote, unquote_plus
 
 # Exact-match (case-insensitive) arg/field names whose VALUE is always a secret.
 _SENSITIVE_KEYS = frozenset({
@@ -35,6 +37,73 @@ _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL)
 
 _MASK = "***REDACTED***"
+_REGISTERED_SECRET_VALUES: set[str] = set()
+
+
+def _is_sensitive_name(name: str) -> bool:
+    """Return whether an environment or structured field name holds a secret."""
+    normalized = name.lower().replace("-", "_")
+    return (
+        normalized in _SENSITIVE_KEYS
+        or normalized.endswith("_key")
+        or any(marker in normalized for marker in (
+            "api_key", "apikey", "token", "secret", "password", "passwd",
+            "credential", "authorization", "private_key",
+        ))
+    )
+
+
+def known_secret_values(env: dict[str, str] | None = None) -> frozenset[str]:
+    """Return configured secret values for output redaction and egress checks.
+
+    Values are intentionally never logged.  The caller receives only a set used
+    for exact replacement or containment checks.
+    """
+    source = os.environ if env is None else env
+    environment_values = (
+        value for key, value in source.items()
+        if _is_sensitive_name(str(key)) and isinstance(value, str) and value
+    )
+    return frozenset((*environment_values, *_REGISTERED_SECRET_VALUES))
+
+
+def register_secret_values(values: Iterable[str]) -> None:
+    """Register credential-store values without retaining their names or logging them."""
+    _REGISTERED_SECRET_VALUES.update(value for value in values if isinstance(value, str) and value)
+
+
+def clear_registered_secret_values() -> None:
+    """Clear registered values; used by test isolation only."""
+    _REGISTERED_SECRET_VALUES.clear()
+
+
+def contains_known_secret(text: str, *, env: dict[str, str] | None = None) -> bool:
+    """Return whether text contains any configured secret value."""
+    decoded_forms = {text}
+    while True:
+        next_forms = {unquote(value) for value in decoded_forms}
+        next_forms.update(unquote_plus(value) for value in decoded_forms)
+        if next_forms <= decoded_forms:
+            break
+        decoded_forms.update(next_forms)
+    return any(secret in value for secret in known_secret_values(env) for value in decoded_forms)
+
+
+def redact_known_secrets(text: str, *, env: dict[str, str] | None = None) -> str:
+    """Redact known configured values as well as recognizable secret shapes."""
+    redacted = redact_text(text)
+    for value in sorted(known_secret_values(env), key=len, reverse=True):
+        encoded_forms = {value}
+        pending = [value]
+        while pending:
+            item = pending.pop()
+            for encoded in (quote(item, safe=""), quote_plus(item, safe="")):
+                if encoded not in encoded_forms and len(encoded) <= len(redacted):
+                    encoded_forms.add(encoded)
+                    pending.append(encoded)
+        for encoded in encoded_forms:
+            redacted = redacted.replace(encoded, _MASK)
+    return redacted
 
 
 def mask_secret(token: str) -> str:
@@ -59,12 +128,12 @@ def redact_text(text: str) -> str:
 def redact_value(value: Any, *, key: str = "", _depth: int = 0) -> Any:
     """Recursively redact a value. A sensitive KEY masks the whole value; strings
     are scrubbed for secret shapes; dicts/lists recurse (max depth 50)."""
-    if key and key.lower().replace("-", "_") in _SENSITIVE_KEYS:
+    if key and _is_sensitive_name(key):
         return _MASK if value not in (None, "", [], {}) else value
     if _depth >= 50:
         return value
     if isinstance(value, str):
-        return redact_text(value)
+        return redact_known_secrets(value)
     if isinstance(value, dict):
         return {k: redact_value(v, key=str(k), _depth=_depth + 1) for k, v in value.items()}
     if isinstance(value, list):

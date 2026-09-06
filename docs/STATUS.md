@@ -148,6 +148,11 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   `autonomy_cooldowns` before calling the diagnoser, preserving the cooldown across
   restart. Regression coverage is in `tests/test_m0_approval_persistence.py` and
   `tests/test_self_improve_loop_e2e.py`.
+- **M0 secret-exfiltration boundary (#148):** Sensitive tool reads are denied for
+  credential files, environment files, private-key material, and SSH paths;
+  credentials use the OS keyring with a 0o600 name-only manifest; tool/audit callback
+  output is redacted before model context; and `web_get` refuses URLs containing
+  configured secret values.
 - **M0 audit integrity boundary:** audit rows now include redacted actor/principal
   attribution and a SHA-256 hash chain with startup migration for existing SQLite
   logs. `GET /audit/verify` returns tamper evidence using the normal gateway token;
