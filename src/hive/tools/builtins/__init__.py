@@ -25,16 +25,12 @@ from hive.tools.base import BaseTool, ToolSpec
 from hive.tools.registry import ToolRegistry
 from hive.tools.shell_provider import LocalShellProvider, ShellProvider
 
-_BLOCKED_NETS = tuple(ipaddress.ip_network(n) for n in [
-    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
-    "127.0.0.0/8", "169.254.0.0/16", "0.0.0.0/8", "::1/128",
-    "::ffff:0:0/96", "fc00::/7", "fe80::/10",
-])
 _BLOCKED_HOSTS = frozenset({
     "localhost", "localhost.localdomain", "metadata", "metadata.google.com",
     "metadata.google.internal", "metadata.azure.internal", "instance-data.ec2.internal",
 })
 _BLOCKED_HOST_SUFFIXES = (".internal", ".localhost")
+_MAX_WEB_GET_BYTES = 12_000
 
 # Local AST fast-path: skip the web search when the top AST hit scores above this.
 _LOCAL_SCORE_THRESHOLD = 0.8
@@ -100,8 +96,10 @@ def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Addres
 
 
 def _validate_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> None:
-    if any(address in network for network in _BLOCKED_NETS):
-        raise ValueError(f"Blocked address: {address}")
+    # is_global covers most non-public ranges. Multicast and reserved ranges are
+    # deliberately explicit because some Python releases classify them as global.
+    if not address.is_global or address.is_multicast or address.is_reserved:
+        raise ValueError(f"Blocked non-global address: {address}")
 
 
 def _resolve_host_addresses(host: str, port: int) -> tuple[str, ...]:
@@ -151,7 +149,7 @@ def _validate_url(url: str) -> None:
     _resolve_host_addresses(host, port or (443 if parsed.scheme == "https" else 80))
 
 
-def _check_redirect(response: httpx.Response) -> None:
+async def _check_redirect(response: httpx.Response) -> None:
     """httpx event hook: block redirects to private/loopback addresses."""
     if response.is_redirect:
         location = response.headers.get("location", "")
@@ -164,6 +162,22 @@ def _check_redirect(response: httpx.Response) -> None:
                 _validate_url(urllib.parse.urljoin(base_url, location))
             except ValueError as exc:
                 raise ValueError(f"SSRF redirect blocked: {exc}") from exc
+
+
+async def _read_limited_response(response: httpx.Response) -> tuple[str, bool]:
+    """Read at most the tool's output budget without buffering an entire body."""
+    body = bytearray()
+    truncated = False
+    async for chunk in response.aiter_bytes(chunk_size=_MAX_WEB_GET_BYTES):
+        remaining = _MAX_WEB_GET_BYTES - len(body)
+        if remaining <= 0:
+            truncated = True
+            break
+        body.extend(chunk[:remaining])
+        if len(chunk) > remaining:
+            truncated = True
+            break
+    return body.decode(response.encoding or "utf-8", errors="replace"), truncated
 
 
 class _PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
@@ -287,9 +301,12 @@ class WebGet(BaseTool):
                 transport=_PinnedHTTPTransport(),
                 trust_env=False,
             ) as c:
-                r = await c.get(url)
-                return ToolResult(tool_name="web_get", content=r.text[:12_000],
-                                  success=r.is_success)
+                async with c.stream("GET", url) as r:
+                    content, truncated = await _read_limited_response(r)
+                    if truncated:
+                        content += "\n[response truncated at 12000 bytes]"
+                    return ToolResult(tool_name="web_get", content=content,
+                                      success=r.is_success)
         except ValueError as exc:
             return ToolResult(tool_name="web_get", content=f"[blocked: {exc}]", success=False)
         except httpx.HTTPError as exc:

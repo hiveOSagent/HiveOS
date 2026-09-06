@@ -108,9 +108,11 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   Focused configuration and webhook coverage passes locally.
 - **M0 SSRF containment (issue #149):** `web_get` now resolves and validates every
   DNS answer before connecting, normalizes alternate IPv4 and mapped-IPv6 literals,
-  rejects metadata/internal hostnames, pins each connection through a custom
+  rejects metadata/internal hostnames and all non-global addresses, pins each connection through a custom
   HTTPX/HTTPCore backend, and revalidates bounded redirect chains. Regression coverage
   includes every bypass URL listed in the issue and mixed public/private DNS answers.
+  Response bodies are streamed and capped at 12,000 bytes before decoding and
+  returning content to the model.
 - **M0 command/file containment (issue #122):** the approval bridge classifies shell
   commands fail-closed, allowing only a small read-only command set and routing
   unknown, malformed, chained, or destructive forms to approval. Protected paths are
