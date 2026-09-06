@@ -23,8 +23,10 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 from hive.core.events import EventType
+from hive.core.safety_state import SafetyStateStore
 from hive.runtime import HiveOS
 from hive.tools.executor import DispatchStatus
 
@@ -105,7 +107,17 @@ class Heartbeat:
         self._last_proactive_ts: float = float("-inf")  # ensures first run always fires
         # Cooldown between failure-triggered self-mod attempts (loop prevention).
         # Without this, persistent failures re-fire the LLM diagnoser on every tick.
-        self._last_failure_self_mod_ts: float = float("-inf")
+        db_path = getattr(hive.config, "state_db", None)
+        self._safety_state = (
+            SafetyStateStore(db_path) if isinstance(db_path, (str, Path)) else None
+        )
+        stored_cooldown = (
+            self._safety_state.get_cooldown("failure_self_mod")
+            if self._safety_state is not None else None
+        )
+        self._last_failure_self_mod_ts = (
+            float("-inf") if stored_cooldown is None else stored_cooldown
+        )
         # Lazy-initialized on first budget-alert tick (avoids constructing a
         # TelegramChannel when Telegram isn't configured).
         self._budget_alert = None
@@ -217,12 +229,16 @@ class Heartbeat:
                 use_learning = bool(
                     getattr(self._hive.config, "learning_loop_enabled", False)
                 )
+                # Record before invoking the diagnoser. If the process is killed
+                # during that call, the next process still suppresses a repeat.
+                self._last_failure_self_mod_ts = now
+                if self._safety_state is not None:
+                    self._safety_state.set_cooldown("failure_self_mod", now)
                 outcomes = await self._hive.self_improve_from_symptom(
                     symptom,
                     use_learning_loop=use_learning,
                 )
                 self_improved = len(outcomes)
-                self._last_failure_self_mod_ts = now
         except Exception as exc:  # noqa: BLE001 - self-improve failure must not abort tick
             log.warning("heartbeat: self-improve check failed: %s", exc)
 

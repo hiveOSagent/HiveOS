@@ -14,7 +14,7 @@ import hive.core.config as _config_mod
 # these so that the first test that calls get_config() doesn't pollute the rest.
 _DOTENV_VARS = ("HIVE_SECRET", "HIVE_HOST", "HIVE_PORT", "HIVE_DATA_DIR", "HIVE_STATE_DB",
                 "MNEMOSYNE_HOME", "OBSIDIAN_VAULT_PATH", "MINIMAX_API_KEY", "HIVE_GITHUB_TOKEN",
-                "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET")
+                "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "HIVE_APPROVER_KEY")
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +36,7 @@ def _reset_globals():
     saved_config = _config_mod._CONFIG
     saved_env = {k: os.environ.get(k) for k in _DOTENV_VARS}
     _approval_gate._pending.clear()
+    _approval_enhance.configure_persistence(None)
     _approval_enhance.release_kill_switch(released_by="pytest fixture")
     _config_mod._CONFIG = None   # start each test from a clean config slate
     # Remove dotenv-loaded vars so tests see only defaults
@@ -43,6 +44,7 @@ def _reset_globals():
         os.environ.pop(k, None)
     yield
     _approval_gate._pending.clear()
+    _approval_enhance.configure_persistence(None)
     _approval_enhance.release_kill_switch(released_by="pytest fixture")
     _config_mod._CONFIG = saved_config
     # Restore pre-test env state

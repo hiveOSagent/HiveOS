@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -36,13 +37,17 @@ ApplyFn = Callable[[str], Awaitable[list[str]]]
 
 
 async def _default_run(cmd: str | list[str], cwd: str | None = None) -> tuple[int, str]:
+    child_env = {key: value for key, value in os.environ.items()
+                 if key != "HIVE_APPROVER_KEY"}
     if isinstance(cmd, list):
         # Use exec (no shell interpretation) for commands with LLM-sourced arguments.
         proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            *cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=child_env)
     else:
         proc = await asyncio.create_subprocess_shell(
-            cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=child_env)
     out, _ = await proc.communicate()
     if proc.returncode is None:
         raise RuntimeError("subprocess finished without a return code")

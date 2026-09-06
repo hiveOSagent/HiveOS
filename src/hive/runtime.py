@@ -802,9 +802,21 @@ class HiveOS:
               router: ModelRouter | None = None) -> "HiveOS":
         """Construct + wire every subsystem. Inject `router` to bypass the network in tests."""
         cfg = config or HiveConfig.from_env()
+        if cfg.autonomy_enabled and not cfg.approver_key:
+            raise RuntimeError(
+                "HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY to be configured"
+            )
+        if cfg.autonomous_selfmod_enabled and not cfg.sandbox_image:
+            raise RuntimeError(
+                "HIVE_AUTONOMOUS_SELFMOD_ENABLED=true requires HIVE_SANDBOX_IMAGE to be configured"
+            )
         cfg.ensure_dirs()
         set_config(cfg)                       # make get_config() return the built config (D1)
         credentials.inject()                   # populate env from the 0o600 vault (A4)
+        # The global operational wrapper owns only state around the immutable gate.
+        # Binding it here makes restart rehydration use the assembled runtime's DB.
+        from hive.core.approval_enhancements import enhance
+        enhance.configure_persistence(str(cfg.state_db))
         events = EventBus()                    # each assembled HiveOS owns its bus (no cross-talk)
 
         # Budget guard: sync gate for the router; record_call on every successful call.

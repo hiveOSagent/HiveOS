@@ -39,6 +39,16 @@ and responsive audit is recorded in `docs/UI_AUDIT_2026-08-22.md`.
 - `Core/approval_gate.py` — the danger firewall. Reached read-only via an `importlib`
   bridge in `src/hive/core/approval.py` (re-exports `gate`, `PROTECTED_PATHS`,
   `DANGEROUS_TOOLS`). **Never edited/moved.**
+- `src/hive/core/approval.py` adds a fail-closed containment layer around the
+  immutable gate: shell commands must match the small read-only allowlist, shell
+  metacharacters and malformed/missing commands require approval, and protected
+  paths are compared case-insensitively after separator and dot-segment
+  normalization.
+- `src/hive/tools/file_safety.py` anchors repository-sensitive paths to the
+  installed package's repository root rather than the process CWD. It blocks
+  sensitive repository paths for both read and write operations, keeps the
+  credential/system denylist case-insensitive, and treats symlinks leaving that
+  root as unsafe.
 - Both are PROTECTED: `core/self_mod.py::_touches_protected` refuses any change touching
   them; the tool executor routes dangerous calls through the gate; Hive never merges to
   `main` (humans do).
@@ -215,6 +225,30 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   any OpenAI SDK client. Constant-time bearer auth (`gateway/auth.py`); typed Pydantic
   boundary (`gateway/protocol.py`) carrying `PROTOCOL_VERSION` on every response
   (additive-first); transport-only channels (`gateway/channels/`). See [`docs/API.md`](API.md) for full reference.
+- **M0 containment boundaries (issues #120, #121):** normal gateway routes use `HIVE_SECRET`, while
+  `POST /approvals/decide` requires the separate `HIVE_APPROVER_KEY` through an isolated
+  FastAPI dependency. When autonomy is enabled, `HiveOS.build()` fails closed if the
+  approver key is empty. Supervised mode temporarily falls back to `HIVE_SECRET` with a
+  warning for backward compatibility. The approver credential is redacted from safe config
+  output and removed from LocalShellProvider, DockerShellProvider, and self-mod child
+  environments. Docker shell containers do not inherit host environment variables by
+  default; only explicitly supplied non-approver values are passed. Autonomous
+  self-modification additionally requires `HIVE_SANDBOX_IMAGE`;
+  candidate test commands run through Docker with no network and only the candidate worktree
+  mounted. Supervised self-mod remains available without a sandbox image.
+- **M0 command/file containment (issue #122):** the file safety boundary denies
+  reads and writes anywhere below the repository's .git/ and .github/workflows/
+  trees with normalized, path-boundary-aware matching. Exact protected files remain
+  covered separately. Path/content inspection shell aliases (including type, dir,
+  ls, where, and which) are approval-bound. Only bare Git status and describe are
+  allowlisted; any Git option, argument, content-bearing, output-writing, or
+  branch-changing command is approval-bound.
+- **M0 durable safety state (issue #123):** the approval enhancement wrapper persists
+  pending approval payloads in the runtime SQLite database. Startup rehydrates only
+  non-expired requests, and atomic consumption prevents concurrent approver requests
+  from executing one rehydrated approval twice. The heartbeat records its
+  failure-triggered self-modification cooldown before invoking the diagnoser, so a
+  process restart cannot bypass that throttle.
 - **Hardening (M7):** secrets are masked by `core/redact.py` before hitting the audit
   trail/logs; tools self-report `available()` (unavailable ones are hidden from the model
   and refused by the executor); sessions get an out-of-band aux-model title
@@ -224,7 +258,7 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   effects. Env surface: MiniMax (`MINIMAX_API_KEY`, `*_BASE`, `HIVE_EXEC_MODEL`,
   `HIVE_EXEC_FALLBACK_MODEL`, `HIVE_AUX_MODEL`, `HIVE_REMAINS_URL`), planner
   (`HIVE_PLANNER_*`), budgeter (`HIVE_DAILY_CALL_CAP`, `HIVE_WINDOW_WARN_PCT`), gateway
-  (`HIVE_HOST/PORT/SECRET`), memory (`MNEMOSYNE_HOME`, `MNEMOSYNE_MCP_URL`,
+  (`HIVE_HOST/PORT/SECRET`, `HIVE_APPROVER_KEY`), memory (`MNEMOSYNE_HOME`, `MNEMOSYNE_MCP_URL`,
   `OBSIDIAN_VAULT_PATH`), autonomy (`HIVE_HEARTBEAT_SEC`, `HIVE_MAX_AGENTS`),
   agent limits (`HIVE_MAX_ITERATIONS`, `HIVE_MAX_PER_TOOL`, `HIVE_SELFMOD_THRESHOLD`,
   `HIVE_TOOL_TIMEOUT`), GitHub
@@ -236,7 +270,13 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   (`ProtectSystem=strict`, non-root). See `deploy/README.md`.
 
 ## 11. Tests
-`pytest` (2961 passing; 4 skipped for optional deps; live smokes remain opt-in via `HIVE_LIVE_TEST=1`);
+The M0 verification snapshot on 2026-09-05 recorded `pytest -q` as **4151 passed,
+19 failed, 18 skipped, 12 warnings** on Windows. The focused M0 #120/#121 tests passed
+(`14 passed`), as did the affected approval/config/autonomy/sandbox suites (`290 passed`).
+The full-suite failures are observed Windows/platform
+assumptions or unrelated baseline tests (Unix `cat`/`bash`/`true`/`printf`, path formatting,
+and unrelated Codex/audit/SOUL checks); they are not used to claim a full-suite pass.
+Live smokes remain opt-in via `HIVE_LIVE_TEST=1`.
 architecture DAG test (`tests/test_architecture.py`) enforces the `core`-is-leaf invariant
 via static AST scan; CI (`.github/workflows/ci.yml`) runs `ruff check` + compile check +
 import smoke + pytest on both 3.11 and 3.12. `ruff` configured in `pyproject.toml`
@@ -298,10 +338,11 @@ The only cost is the restart-loss caveat (documented in `docs/decisions/005-edit
 failed test leaves the repo in a broken state. A passing test could accidentally commit
 unrelated local changes.
 **Solution:** `core/self_mod.py` uses `git worktree add -b <branch> <tmp_path>`, applies
-the edit there, runs pytest inside the worktree (or inside a Docker container with
-`--network none` if `HIVE_SANDBOX_IMAGE` is set), then pushes the branch and opens a
-draft PR. The live tree is never touched. On failure, the worktree is removed; no branch
-is pushed; the failure goes to memory.
+the edit there, then runs pytest inside the worktree for supervised changes or inside a
+Docker container with `--network none` for autonomous self-modification. Autonomous
+self-modification cannot start unless `HIVE_SANDBOX_IMAGE` is set. The live tree is never
+touched. On failure, the worktree is removed; no branch is pushed; the failure goes to
+memory.
 **Why clever:** Worktrees are a standard git primitive but rarely used for this purpose.
 The result is a self-improving agent that cannot corrupt its own working state.
 

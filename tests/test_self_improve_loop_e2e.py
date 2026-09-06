@@ -238,6 +238,33 @@ def test_heartbeat_failure_self_mod_cooldown_blocks_repeat():
     assert hive.self_improve_from_symptom.await_count == 2
 
 
+def test_heartbeat_failure_cooldown_survives_restart(tmp_path):
+    """A new heartbeat reads the previous diagnoser attempt from SQLite."""
+    hive = MagicMock()
+    hive.config.max_concurrent_agents = 1
+    hive.config.heartbeat_sec = 900
+    hive.config.selfmod_failure_threshold = 3
+    hive.config.selfmod_proactive_interval = 0
+    hive.config.selfmod_failure_cooldown_sec = 1800.0
+    hive.config.state_db = tmp_path / "state.sqlite"
+    hive.cron.due_and_enqueue.return_value = 0
+    hive.commitments.due_and_enqueue.return_value = 0
+    hive.task_board.due.return_value = []
+    hive.task_board.recent_failures.return_value = [MagicMock(last_error="x")] * 3
+    hive.planner.plan = AsyncMock(return_value=[])
+    hive.memory.prefetch.return_value = "ctx"
+    hive.consolidate = AsyncMock(return_value=0)
+    hive.curate.return_value = {"transitions": []}
+    hive.curate_umbrellas = AsyncMock()
+    hive.budgeter.refresh = AsyncMock()
+    hive.self_improve_from_symptom = AsyncMock(return_value=[{"id": 1}])
+
+    asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    asyncio.run(Heartbeat(hive)._tick_inner(1100.0))
+
+    assert hive.self_improve_from_symptom.await_count == 1
+
+
 def test_heartbeat_self_mod_cooldown_zero_means_no_throttle():
     """With selfmod_failure_cooldown_sec=0, the failure path fires every tick
     (legacy behaviour preserved when operator opts in)."""

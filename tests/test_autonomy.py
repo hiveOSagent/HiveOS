@@ -288,8 +288,9 @@ class _Router:
 def _hive(tmp_path) -> HiveOS:
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     # These tests exercise tick()'s scheduling/dispatch mechanics, not the P0
-    # autonomy gate (default-off) — enable it so the tick actually runs.
+    # autonomy gate (default-off) - enable it so the tick actually runs.
     object.__setattr__(cfg, "autonomy_enabled", True)
+    object.__setattr__(cfg, "approver_key", "test-approver-key")
     return HiveOS.build(cfg, router=_Router())
 
 

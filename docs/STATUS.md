@@ -6,8 +6,17 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **SPRINT_7 Phase B** (cleanup + coverage, branch `sprint7/cleanup-coverage`).
-Test suite: **3907 passing** (4 skipped for optional deps).
+Last reconciled after **M0 issues #120-#123** (out-of-band approver credential,
+ mandatory autonomous self-mod sandbox, command/file containment, and durable
+ approval/cooldown state, branch `codex/m0-command-containment`, 2026-09-06).
+Verification snapshot: #123-focused tests **34 passed**; affected autonomy/tools
+suites **231 passed, 2 skipped**. The prior M0 #120-#122 focused snapshot was
+**18 passed**; its broader approval/config/autonomy/sandbox suites were **290 passed**.
+The prior full `pytest -q` snapshot was **4151 passed,
+19 failed, 18 skipped, 12 warnings** on Windows (the current full run is **4194 passed,
+19 failed, 18 skipped, 13 warnings** on Windows, with the same 19 baseline/platform
+failures). The full-suite failures are documented
+platform/baseline limitations, not an M0 pass claim.
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 
 UI concept branch note (2026-08-22): `gpt-ui-improvements` adds an isolated fixture-only
@@ -73,6 +82,39 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 - **Hardening2 (M7):** secret redaction in audit log; `PROTOCOL_VERSION` on every gateway
   response; `BaseTool.available()` signals hide/refuse unavailable tools; session
   auto-titling via out-of-band aux-model call.
+- **M0 approval boundary (issue #120):** `HIVE_APPROVER_KEY` is loaded into `HiveConfig`
+  and is required for `POST /approvals/decide`; the normal `HIVE_SECRET` receives HTTP 401
+  on that route when an approver key is configured. With autonomy enabled, `HiveOS.build()`
+  fails closed without the key. Supervised mode retains a warning-emitting fallback to
+  `HIVE_SECRET`. The key is redacted from safe config output and removed from shell,
+  Docker, and self-mod child-process environments. Docker shell containers do not
+  inherit host environment variables by default; only explicitly supplied,
+  non-approver values are forwarded. Regression coverage is in
+  `tests/test_m0_approver_key.py`.
+- **M0 autonomous self-mod sandbox (issue #121):** `HiveOS.build()` rejects
+  `HIVE_AUTONOMOUS_SELFMOD_ENABLED=true` without `HIVE_SANDBOX_IMAGE`. With an image,
+  candidate test commands are routed through the no-network Docker sandbox with only the
+  candidate worktree mounted; supervised self-mod remains backward-compatible without an
+  image. Regression coverage is in `tests/test_m0_selfmod_sandbox.py`.
+- **M0 command/file containment (issue #122):** the approval bridge classifies shell
+  commands fail-closed, allowing only a small read-only command set and routing
+  unknown, malformed, chained, or destructive forms to approval. Protected paths are
+  normalized case-insensitively, and `file_safety` uses the repository root
+  independent of CWD to deny sensitive repository reads/writes and root-escaping
+  symlinks. The whole .git/ and .github/workflows/ directory trees are protected
+  with boundary-aware normalized matching, while unrelated names such as .gitignore
+  remain permitted. Path/content inspection shell aliases are approval-bound. Only
+  bare git status and git describe are safe; any Git option or argument and every
+  branch-changing, content-bearing, or output-writing Git command is approval-bound.
+  Regression coverage is in tests/test_m0_command_containment.py.
+- **M0 durable approval and cooldown state (issue #123):** the operational wrapper,
+  not protected `Core/approval_gate.py`, writes pending approvals to
+  `approvals_pending` and rehydrates non-expired rows at runtime startup. An atomic
+  consume gives a concurrent decision exactly one executable result. The heartbeat
+  writes its failure-triggered self-modification timestamp to
+  `autonomy_cooldowns` before calling the diagnoser, preserving the cooldown across
+  restart. Regression coverage is in `tests/test_m0_approval_persistence.py` and
+  `tests/test_self_improve_loop_e2e.py`.
 - **Providers (M8):** Anthropic + Codex adapters behind `LLMAdapter`; `make_adapter(provider)`
   registry; executor switchable via `HIVE_EXEC_PROVIDER` (minimax|anthropic).
 - **Mission Control visibility (M10-a):** Four authenticated gateway endpoints expose runtime

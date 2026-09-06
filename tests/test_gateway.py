@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from starlette.testclient import TestClient
 
+from hive.core.approval_enhancements import enhance
 from hive.core.config import HiveConfig
 from hive.core.types import ToolCall
 from hive.gateway.app import create_app
@@ -188,6 +189,7 @@ def test_approvals_decide_self_mod_routes_to_improver(tmp_path):
                 risk_tier=RiskTier.REVIEW)
     approval_id = gate.request("self_mod:patch_code", {"summary": "fix crash"},
                                "test reason")
+    enhance.audit_request(approval_id)
     hive.edit_pending[approval_id] = edit
 
     with _client(hive) as c:
@@ -216,6 +218,7 @@ def test_approvals_decide_self_mod_rejection_cleans_edit_pending(tmp_path):
                 risk_tier=RiskTier.REVIEW)
     approval_id = gate.request("self_mod:patch_code", {"summary": "fix crash"},
                                "test reason")
+    enhance.audit_request(approval_id)
     hive.edit_pending[approval_id] = edit
 
     with _client(hive) as c:
@@ -235,6 +238,7 @@ def test_approvals_decide_self_mod_missing_edit_returns_error(tmp_path):
     hive = _hive(tmp_path)
     approval_id = gate.request("self_mod:patch_code", {"summary": "gone"},
                                "test")
+    enhance.audit_request(approval_id)
     # do NOT store anything in edit_pending
 
     with _client(hive) as c:

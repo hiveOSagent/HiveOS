@@ -33,7 +33,7 @@ from fastapi.responses import StreamingResponse
 
 from hive.core.approval import gate
 from hive.core.approval_enhancements import DecisionOutcome, enhance
-from hive.gateway.auth import make_auth_dependency, token_ok
+from hive.gateway.auth import make_approver_dependency, make_auth_dependency, token_ok
 from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
 from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse
@@ -53,6 +53,14 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     cfg = hive.config
     secret = cfg.secret
     require_token = make_auth_dependency(secret)
+    approver_key = cfg.approver_key
+    if not approver_key and not cfg.autonomy_enabled:
+        log.warning(
+            "HIVE_APPROVER_KEY is not configured; supervised approvals temporarily "
+            "fall back to HIVE_SECRET. Configure HIVE_APPROVER_KEY before enabling autonomy."
+        )
+        approver_key = secret
+    require_approver = make_approver_dependency(approver_key)
     # Telegram surface (optional): use an injected channel, else build one from config.
     if telegram is None and hive.config.telegram_token:
         telegram = TelegramChannel(hive.config.telegram_token)
@@ -1003,7 +1011,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         hive.edit_pending.pop(body.approval_id, None)
         return {"cancelled": True, "approval_id": body.approval_id}
 
-    @app.post("/approvals/decide", dependencies=[Depends(require_token)])
+    @app.post("/approvals/decide", dependencies=[Depends(require_approver)])
     async def decide(body: ApprovalDecision) -> dict:
         # Route through the enhancements layer: records an AuditRecord, honors
         # the kill-switch, and expires stale pending items before delegating to

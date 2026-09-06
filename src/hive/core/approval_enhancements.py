@@ -31,6 +31,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable, Iterable
 
 from hive.core.events import EventBus, EventType
+from hive.core.safety_state import SafetyStateStore
 
 log = logging.getLogger("hive.gate.enhancements")
 
@@ -103,6 +104,7 @@ class ApprovalGateEnhancements:
         events: EventBus | None = None,
         history_max: int = 1000,
         clock: Callable[[], float] | None = None,
+        state_store: SafetyStateStore | None = None,
     ) -> None:
         self._gate = gate
         self._policy = policy or ExpirationPolicy()
@@ -116,6 +118,9 @@ class ApprovalGateEnhancements:
         self._lock = threading.RLock()                  # protects _history + kill state
         # requested_at: id -> ts, indexed when request_audited() is called.
         self._requested_at: dict[str, float] = {}
+        self._state_store = state_store
+        if state_store is not None:
+            self.rehydrate_pending()
 
     # ----- public read-only API --------------------------------------------
 
@@ -177,6 +182,42 @@ class ApprovalGateEnhancements:
         ts = self._clock() if requested_at is None else float(requested_at)
         with self._lock:
             self._requested_at[approval_id] = ts
+            if self._state_store is not None:
+                pending = getattr(self._gate, "_pending", {})
+                item = pending.get(approval_id)
+                if item is None:
+                    raise RuntimeError(f"approval {approval_id} disappeared before persistence")
+                self._state_store.record_approval(item, ts)
+
+    def configure_persistence(self, db_path: str | None) -> list[str]:
+        """Bind this wrapper to a state DB and rehydrate its live approval queue.
+
+        A None path is intended for isolated tests and detaches the singleton.
+        """
+        with self._lock:
+            self._state_store = None if db_path is None else SafetyStateStore(db_path)
+            self._requested_at.clear()
+            return self.rehydrate_pending()
+
+    def rehydrate_pending(self) -> list[str]:
+        """Restore live rows into the gate and discard stale rows at startup."""
+        if self._state_store is None:
+            return []
+        now = self._clock()
+        ttl = self._policy.ttl_seconds if self._policy.enabled else None
+        live, expired = self._state_store.load_pending(now=now, ttl_seconds=ttl)
+        pending = getattr(self._gate, "_pending", {})
+        for item in live:
+            approval_id = str(item["id"])
+            pending.setdefault(approval_id, {
+                "id": approval_id,
+                "tool": item["tool"],
+                "args": item["args"],
+                "reason": item["reason"],
+                "kind": item["kind"],
+            })
+            self._requested_at[approval_id] = float(item["requested_at"])
+        return expired
 
     def is_request_blocked(self) -> bool:
         """True when a new approval request should be refused outright.
@@ -222,7 +263,7 @@ class ApprovalGateEnhancements:
                 item = self._expire(approval_id, decided_by=decided_by, note=note)
                 return item, DecisionOutcome.EXPIRED if item is not None else None
 
-            item = self._gate.resolve(approval_id, approved)
+            item = self._take_pending(approval_id, approved)
             if item is None:
                 return None, None
             outcome = DecisionOutcome.APPROVED if approved else DecisionOutcome.REJECTED
@@ -334,7 +375,7 @@ class ApprovalGateEnhancements:
     def _terminate_due_to_kill(self, aid: str, *, decided_by: str,
                                note: str) -> dict | None:
         """Force-reject a pending approval because the kill-switch is on."""
-        item = self._gate.resolve(aid, False)
+        item = self._take_pending(aid, False)
         if item is None:
             return None
         req_at = self._requested_at.pop(aid, self._clock())
@@ -357,7 +398,7 @@ class ApprovalGateEnhancements:
 
     def _expire(self, aid: str, *, decided_by: str, note: str) -> dict | None:
         """Force-reject a pending approval because TTL elapsed."""
-        item = self._gate.resolve(aid, False)
+        item = self._take_pending(aid, False)
         if item is None:
             return None
         req_at = self._requested_at.pop(aid, self._clock())
@@ -385,6 +426,19 @@ class ApprovalGateEnhancements:
                 # Trim oldest; keep newest `history_max`.
                 self._history = self._history[-self._history_max:]
             self._requested_at.pop(rec.id, None)
+            if self._state_store is not None:
+                self._state_store.delete_approval(rec.id)
+
+    def _take_pending(self, approval_id: str, approved: bool) -> dict | None:
+        """Remove one pending approval from durable state before gate resolution."""
+        if self._state_store is not None:
+            stored = self._state_store.consume_approval(approval_id)
+            if stored is None:
+                return None
+        item = self._gate.resolve(approval_id, approved)
+        if item is None and self._state_store is not None:
+            log.error("persisted approval %s was absent from the gate; refusing it", approval_id)
+        return item
 
     def _emit(self, event_type: EventType, **data: object) -> None:
         if self._events is None:

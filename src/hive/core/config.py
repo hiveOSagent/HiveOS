@@ -73,7 +73,7 @@ class HiveConfig:
     # Telegram surface (optional)
     telegram_token: str
     telegram_webhook_secret: str
-    # Self-mod sandbox (optional): docker image to run candidate tests in
+    # Self-mod sandbox: optional for supervised changes, mandatory for autonomous self-mod.
     sandbox_image: str
     # MCP stdio servers to load at startup: ';'-separated command lines (A2)
     mcp_servers: tuple[str, ...]
@@ -143,6 +143,9 @@ class HiveConfig:
     # P0 autonomy gates: both stay opt-in until durable task and approval recovery exist.
     autonomy_enabled: bool = False
     autonomous_selfmod_enabled: bool = False
+    # Out-of-band approval credential (HIVE_APPROVER_KEY).  Kept at the end with
+    # a default so direct test/config construction remains backward-compatible.
+    approver_key: str = ""
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -227,6 +230,7 @@ class HiveConfig:
             stripe_customer_id=os.getenv("STRIPE_CUSTOMER_ID", ""),
             budget_forecast_alert_days=int(os.getenv("HIVE_BUDGET_FORECAST_ALERT_DAYS", "1")),
             budget_daily_spend_cap_usd=float(os.getenv("HIVE_DAILY_SPEND_CAP_USD", "0")),
+            approver_key=os.getenv("HIVE_APPROVER_KEY", ""),
         )
 
     def validate(self) -> list[str]:
@@ -262,6 +266,10 @@ class HiveConfig:
             issues.append(f"HIVE_SELFMOD_SAFETY_MAX_FILES={self.selfmod_safety_max_files} must be >= 1")
         if self.autonomous_selfmod_enabled and not self.autonomy_enabled:
             issues.append("HIVE_AUTONOMOUS_SELFMOD_ENABLED requires HIVE_AUTONOMY_ENABLED=true")
+        if self.autonomous_selfmod_enabled and not self.sandbox_image:
+            issues.append(
+                "HIVE_AUTONOMOUS_SELFMOD_ENABLED requires HIVE_SANDBOX_IMAGE to be configured"
+            )
         if self.budget_forecast_alert_days < 0:
             issues.append("HIVE_BUDGET_FORECAST_ALERT_DAYS must be >= 0")
         if self.budget_daily_spend_cap_usd < 0:
@@ -319,6 +327,7 @@ class HiveConfig:
             "host": self.host,
             "port": self.port,
             "secret": _REDACTED,
+            "approver_key": _REDACTED if self.approver_key else "",
             "minimax_api_key": _REDACTED if self.minimax_api_key else "",
             "anthropic_api_key": _REDACTED if self.anthropic_api_key else "",
             "github_token": _REDACTED if self.github_token else "",
