@@ -444,6 +444,80 @@ def test_check_redirect_allows_public_location():
     _check_redirect(mock_response)  # Should not raise
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:8000/x",
+        "http://0.0.0.0:8000/x",
+        "http://[::ffff:127.0.0.1]/x",
+        "http://2130706433/",
+        "http://0177.0.0.1/",
+        "http://0x7f000001/",
+        "http://127.0.0.1.nip.io/",
+        "http://metadata.google.internal/latest/meta-data/",
+    ],
+)
+def test_validate_url_blocks_all_known_ssrf_encodings(monkeypatch, url):
+    """Every issue #149 bypass is rejected before an HTTP request is made."""
+    import socket
+    from hive.tools import builtins as builtins_mod
+
+    if "nip.io" in url:
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda *args, **kwargs: [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))
+            ],
+        )
+    with pytest.raises(ValueError, match="Blocked"):
+        builtins_mod._validate_url(url)
+
+
+def test_validate_url_blocks_when_any_dns_answer_is_private(monkeypatch):
+    import socket
+    from hive.tools import builtins as builtins_mod
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.7", 0)),
+        ],
+    )
+    with pytest.raises(ValueError, match="Blocked address"):
+        builtins_mod._validate_url("https://example.test/")
+
+
+def test_pinned_network_backend_revalidates_and_pins_connection(monkeypatch):
+    from hive.tools import builtins as builtins_mod
+
+    calls = []
+
+    class _FakeBackend:
+        async def connect_tcp(self, host, port, **kwargs):
+            calls.append((host, port))
+            return "stream"
+
+        async def connect_unix_socket(self, path, **kwargs):
+            return "unix-stream"
+
+        async def sleep(self, seconds):
+            return None
+
+    monkeypatch.setattr(
+        builtins_mod,
+        "_resolve_host_addresses",
+        lambda host, port: ("93.184.216.34", "93.184.216.35"),
+    )
+    backend = builtins_mod._PinnedNetworkBackend()
+    backend._backend = _FakeBackend()
+    result = asyncio.run(backend.connect_tcp("example.test", 443))
+    assert result == "stream"
+    assert calls == [("93.184.216.34", 443)]
+
+
 # --- Task 1: BaseTool.to_openai_function() -------------------------------------
 
 def test_base_tool_to_openai_function_format():

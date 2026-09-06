@@ -265,6 +265,14 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   treats `From` alone as authorization.
   `HIVE_PRODUCTION=true` also rejects the default gateway secret. The broader content
   provenance envelope remains the dedicated M2 HIVE-009 follow-up.
+- **M0 outbound web containment (issue #149):** `web_get` resolves hostnames before
+  connecting and rejects every returned private, loopback, link-local, metadata, or
+  special-use address. IPv4 decimal/octal/hex spellings and IPv4-mapped IPv6 are
+  normalized before comparison; known metadata/internal hostnames are rejected by
+  name. A custom HTTPX/HTTPCore network backend re-resolves and pins each TCP
+  connection to the validated address set, while response hooks revalidate every
+  redirect and HTTPX bounds the redirect chain. Environment proxies are disabled for
+  this tool so the validated destination cannot be delegated to an untrusted proxy.
 - **Hardening (M7):** secrets are masked by `core/redact.py` before hitting the audit
   trail/logs; tools self-report `available()` (unavailable ones are hidden from the model
   and refused by the executor); sessions get an out-of-band aux-model title

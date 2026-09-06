@@ -8,11 +8,14 @@ is not flagged dangerous itself, so routine commands stay fast.
 """
 from __future__ import annotations
 
+import asyncio
 import ipaddress
+import socket
 import urllib.parse
 from pathlib import Path
 from typing import Any
 
+import httpcore
 import httpx
 
 from hive.core.types import ToolResult
@@ -22,29 +25,130 @@ from hive.tools.base import BaseTool, ToolSpec
 from hive.tools.registry import ToolRegistry
 from hive.tools.shell_provider import LocalShellProvider, ShellProvider
 
-_BLOCKED_NETS = [ipaddress.ip_network(n) for n in [
+_BLOCKED_NETS = tuple(ipaddress.ip_network(n) for n in [
     "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
-    "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10",
-]]
+    "127.0.0.0/8", "169.254.0.0/16", "0.0.0.0/8", "::1/128",
+    "::ffff:0:0/96", "fc00::/7", "fe80::/10",
+])
+_BLOCKED_HOSTS = frozenset({
+    "localhost", "localhost.localdomain", "metadata", "metadata.google.com",
+    "metadata.google.internal", "metadata.azure.internal", "instance-data.ec2.internal",
+})
+_BLOCKED_HOST_SUFFIXES = (".internal", ".localhost")
 
 # Local AST fast-path: skip the web search when the top AST hit scores above this.
 _LOCAL_SCORE_THRESHOLD = 0.8
 
 
+def _canonical_host(host: str) -> str:
+    host = host.strip().rstrip(".").casefold()
+    try:
+        return host.encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise ValueError("Invalid hostname") from exc
+
+
+def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Parse regular and alternate IPv4 spellings plus IPv6 literals."""
+    host = host.strip().strip("[]")
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+
+    value: int | None = None
+    if host.lower().startswith("0x"):
+        try:
+            value = int(host, 16)
+        except ValueError:
+            return None
+    elif host.isdigit():
+        try:
+            value = int(host, 10)
+            if value > 0xFFFFFFFF and host.startswith("0"):
+                value = int(host, 8)
+        except ValueError:
+            return None
+        if value > 0xFFFFFFFF and host.startswith("0"):
+            try:
+                value = int(host, 8)
+            except ValueError:
+                return None
+    else:
+        parts = host.split(".")
+        if len(parts) != 4:
+            return None
+        values: list[int] = []
+        for part in parts:
+            try:
+                if part.lower().startswith("0x"):
+                    parsed = int(part, 16)
+                elif len(part) > 1 and part.startswith("0"):
+                    parsed = int(part, 8)
+                else:
+                    parsed = int(part, 10)
+            except ValueError:
+                return None
+            if not 0 <= parsed <= 255:
+                return None
+            values.append(parsed)
+        value = int.from_bytes(bytes(values), "big")
+
+    if value is not None and 0 <= value <= 0xFFFFFFFF:
+        return ipaddress.IPv4Address(value)
+    return None
+
+
+def _validate_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> None:
+    if any(address in network for network in _BLOCKED_NETS):
+        raise ValueError(f"Blocked address: {address}")
+
+
+def _resolve_host_addresses(host: str, port: int) -> tuple[str, ...]:
+    canonical = _canonical_host(host)
+    if canonical in _BLOCKED_HOSTS or canonical.endswith(_BLOCKED_HOST_SUFFIXES):
+        raise ValueError(f"Blocked hostname: {canonical}")
+
+    literal = _parse_ip_literal(canonical)
+    if literal is not None:
+        _validate_address(literal)
+        return (str(literal),)
+
+    try:
+        records = socket.getaddrinfo(canonical, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"Unable to resolve hostname: {canonical}") from exc
+
+    addresses: list[str] = []
+    for record in records:
+        raw_address = record[4][0]
+        try:
+            address = ipaddress.ip_address(raw_address)
+        except ValueError as exc:
+            raise ValueError(f"Resolver returned an invalid address for {canonical}") from exc
+        _validate_address(address)
+        text = str(address)
+        if text not in addresses:
+            addresses.append(text)
+    if not addresses:
+        raise ValueError(f"Hostname resolved without addresses: {canonical}")
+    return tuple(addresses)
+
+
 def _validate_url(url: str) -> None:
-    parsed = urllib.parse.urlparse(url)
+    try:
+        parsed = urllib.parse.urlparse(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Invalid URL") from exc
     if parsed.scheme not in ("http", "https"):
         raise ValueError(f"Blocked scheme: {parsed.scheme!r}")
     if parsed.username or parsed.password:
         raise ValueError("URL userinfo not allowed")
-    host = parsed.hostname or ""
-    try:
-        addr = ipaddress.ip_address(host)
-        if any(addr in net for net in _BLOCKED_NETS):
-            raise ValueError(f"Blocked address: {addr}")
-    except ValueError as exc:
-        if "Blocked" in str(exc):
-            raise
+    host = parsed.hostname
+    if not host:
+        raise ValueError("URL hostname required")
+    _resolve_host_addresses(host, port or (443 if parsed.scheme == "https" else 80))
 
 
 def _check_redirect(response: httpx.Response) -> None:
@@ -53,9 +157,45 @@ def _check_redirect(response: httpx.Response) -> None:
         location = response.headers.get("location", "")
         if location:
             try:
-                _validate_url(location)
+                try:
+                    base_url = str(response.url)
+                except RuntimeError:
+                    base_url = ""
+                _validate_url(urllib.parse.urljoin(base_url, location))
             except ValueError as exc:
                 raise ValueError(f"SSRF redirect blocked: {exc}") from exc
+
+
+class _PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
+    """Connect only to addresses validated immediately before each TCP connect."""
+
+    def __init__(self) -> None:
+        self._backend = httpcore.AnyIOBackend()
+
+    async def connect_tcp(self, host: str, port: int, **kwargs: Any) -> httpcore.AsyncNetworkStream:
+        addresses = await asyncio.to_thread(_resolve_host_addresses, host, port)
+        last_error: Exception | None = None
+        for address in addresses:
+            try:
+                return await self._backend.connect_tcp(address, port, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+        assert last_error is not None
+        raise last_error
+
+    async def connect_unix_socket(self, path: str, **kwargs: Any) -> httpcore.AsyncNetworkStream:
+        return await self._backend.connect_unix_socket(path, **kwargs)
+
+    async def sleep(self, seconds: float) -> None:
+        await self._backend.sleep(seconds)
+
+
+class _PinnedHTTPTransport(httpx.AsyncHTTPTransport):
+    """HTTPX transport with DNS resolution pinned and environment proxies disabled."""
+
+    def __init__(self) -> None:
+        super().__init__(trust_env=False)
+        self._pool._network_backend = _PinnedNetworkBackend()
 
 
 class ReadFile(BaseTool):
@@ -135,18 +275,25 @@ class WebGet(BaseTool):
     async def execute(self, **params: Any) -> ToolResult:
         url = str(params.get("url", ""))
         try:
-            _validate_url(url)
+            await asyncio.to_thread(_validate_url, url)
         except ValueError as exc:
             return ToolResult(tool_name="web_get", content=f"[blocked: {exc}]", success=False)
-        async with httpx.AsyncClient(
-            timeout=30,
-            follow_redirects=True,
-            max_redirects=10,
-            event_hooks={"response": [_check_redirect]},
-        ) as c:
-            r = await c.get(url)
-            return ToolResult(tool_name="web_get", content=r.text[:12_000],
-                              success=r.is_success)
+        try:
+            async with httpx.AsyncClient(
+                timeout=30,
+                follow_redirects=True,
+                max_redirects=10,
+                event_hooks={"response": [_check_redirect]},
+                transport=_PinnedHTTPTransport(),
+                trust_env=False,
+            ) as c:
+                r = await c.get(url)
+                return ToolResult(tool_name="web_get", content=r.text[:12_000],
+                                  success=r.is_success)
+        except ValueError as exc:
+            return ToolResult(tool_name="web_get", content=f"[blocked: {exc}]", success=False)
+        except httpx.HTTPError as exc:
+            return ToolResult(tool_name="web_get", content=f"[request failed: {exc}]", success=False)
 
 
 class _Gated(BaseTool):
