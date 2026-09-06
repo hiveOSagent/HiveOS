@@ -254,13 +254,14 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   allowlist. Telegram requires its Bot API webhook secret plus an allowed user or chat;
   Slack and Discord require their respective allowed sender lists. Email additionally
   requires a trusted ingress-provided `X-Verified-Sender` matching the parsed `From`
-  address and an aligned DMARC pass before applying its allowlist. Missing
+  address, set only after the ingress has verified aligned DMARC. Missing
   configuration fails at `HiveOS.build()` and non-allowlisted input is tagged
   `untrusted`, acknowledged, and discarded without calling `hive.ask()`. Telegram
   applies the same 1 MiB request cap as the other inbound webhooks.
   Email ingress must strip untrusted authentication headers and add its own
-  provider-verified `X-Verified-Sender`/DMARC assertions; Hive never treats the
-  RFC822 `From` field alone as authorization.
+  provider-verified `X-Verified-Sender` assertion; Hive does not parse
+  authentication results from the attacker-controlled RFC822 body and never
+  treats `From` alone as authorization.
   `HIVE_PRODUCTION=true` also rejects the default gateway secret. The broader content
   provenance envelope remains the dedicated M2 HIVE-009 follow-up.
 - **Hardening (M7):** secrets are masked by `core/redact.py` before hitting the audit

@@ -516,10 +516,10 @@ def test_email_parse_uses_from_and_message_id():
     assert evt.user_id == "bob@x.com"
     assert evt.message_id == "<m1@x.com>"
     assert evt.platform == "email"
-    assert evt.raw["sender_verified"] is False
+    assert "sender_verified" not in evt.raw
 
 
-def test_email_parse_marks_mta_verified_dmarc_sender():
+def test_email_parse_does_not_trust_body_authentication_results():
     raw = (
         b"From: bob@x.com\r\n"
         b"Authentication-Results: mx.example; dmarc=pass header.from=x.com\r\n"
@@ -527,7 +527,7 @@ def test_email_parse_marks_mta_verified_dmarc_sender():
     )
     evt = EmailChannel().parse_update({"raw_bytes": raw})
     assert evt is not None
-    assert evt.raw["sender_verified"] is True
+    assert "sender_verified" not in evt.raw
 
 
 def test_email_parse_returns_none_for_missing_raw_bytes():
@@ -659,7 +659,7 @@ def test_email_webhook_processes_message_with_fake_channel(tmp_path, monkeypatch
         def parse_update(self, raw):
             return MessageEvent(text="hello hive", chat_id="alice@x.com",
                                 user_id="alice@x.com", message_id="<1@x.com>",
-                                platform="email", raw={"sender_verified": True})
+                                platform="email", raw={})
 
         async def send(self, message):
             self.sent.append(message)
@@ -750,7 +750,7 @@ def test_email_webhook_refuses_unallowed_sender_before_model_turn(tmp_path, monk
     with TestClient(create_app(hive)) as client:
         response = client.post(
             "/email/webhook",
-            content=b"Authentication-Results: dmarc=pass\nFrom: intruder@example.com\n\nhi",
+            content=b"From: intruder@example.com\n\nhi",
             headers={
                 "X-Webhook-Secret": "secret",
                 "X-Verified-Sender": "intruder@example.com",
@@ -770,7 +770,7 @@ def test_email_webhook_requires_verified_sender_header(tmp_path, monkeypatch):
     with TestClient(create_app(hive)) as client:
         response = client.post(
             "/email/webhook",
-            content=b"From: alice@example.com\nAuthentication-Results: dmarc=pass\n\nhi",
+            content=b"From: alice@example.com\n\nhi",
             headers={"X-Webhook-Secret": "secret"},
         )
     assert response.json() == {"ok": True, "handled": False, "reason": "sender_not_verified"}
@@ -787,7 +787,7 @@ def test_email_webhook_rejects_mismatched_verified_sender(tmp_path, monkeypatch)
     with TestClient(create_app(hive)) as client:
         response = client.post(
             "/email/webhook",
-            content=b"From: alice@example.com\nAuthentication-Results: dmarc=pass\n\nhi",
+            content=b"From: alice@example.com\n\nhi",
             headers={
                 "X-Webhook-Secret": "secret",
                 "X-Verified-Sender": "intruder@example.com",

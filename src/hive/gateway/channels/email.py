@@ -25,7 +25,6 @@ MAX_EMAIL_BYTES = 1_048_576
 MAX_MULTIPART_PARTS = 64
 # Permissive but bounded regex for From-header validation (user_id only, never chat_id).
 _FROM_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-_DMARC_PASS_RE = re.compile(r"(?:^|[;\s])dmarc\s*=\s*pass(?:[;\s]|$)", re.IGNORECASE)
 
 
 class EmailChannel(ChannelAdapter):
@@ -66,13 +65,6 @@ class EmailChannel(ChannelAdapter):
             log.warning("email webhook: invalid From header, treating as anonymous")
         message_id = msg.get("Message-ID", "")
         in_reply_to = msg.get("In-Reply-To", "")
-        # The gateway's shared webhook secret authenticates the posting MTA, not
-        # the author in From.  Only trust the From allowlist after the MTA has
-        # supplied its own aligned DMARC result; the ingress must strip any
-        # inbound Authentication-Results header before adding this one. The
-        # gateway also requires a matching X-Verified-Sender header.
-        authentication_results = "\n".join(msg.get_all("Authentication-Results", []))
-        sender_verified = bool(_DMARC_PASS_RE.search(authentication_results))
         # Fallback for chat_id: prefer Message-ID (unique, unspoofable) over a
         # synthetic hash so the gateway can derive a stable session_id.
         effective_chat_id = chat_id or message_id or f"unknown:{hashlib_short(raw)}"
@@ -85,13 +77,12 @@ class EmailChannel(ChannelAdapter):
             raw={
                 "in_reply_to": in_reply_to,
                 "subject": subject,
-                "sender_verified": sender_verified,
             },
         )
 
     def verify_signature(self, headers: Mapping[str, str], body: bytes) -> bool:
         # v1: gateway authenticates POSTs to /email/webhook via X-Webhook-Secret;
-        # sender identity is established separately from the parsed DMARC result.
+        # the trusted ingress supplies the provider-verified sender header.
         return True
 
     async def send(self, message: OutgoingMessage) -> SendResult:

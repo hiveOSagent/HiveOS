@@ -99,7 +99,7 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 - **M0 inbound sender boundary (issue #150):** Telegram, Slack, Discord, and email
   require an explicit per-surface owner allowlist before an inbound message can reach
   `hive.ask()`. Email also requires a trusted ingress sender header matching `From` and
-  an aligned DMARC pass. Refused input is tagged `untrusted` then discarded. Telegram additionally
+  set only after provider-verified DMARC alignment. Refused input is tagged `untrusted` then discarded. Telegram additionally
   requires its Bot API webhook secret and shares the 1 MiB body cap used by the other
   webhooks. Missing allowlist/secret configuration fails closed at startup.
   `HIVE_PRODUCTION=true` rejects the default gateway secret; the wider HIVE-009 content

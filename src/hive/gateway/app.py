@@ -1692,8 +1692,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 return {"ok": True, "handled": False}
             verified_sender = request.headers.get("X-Verified-Sender", "").strip()
             if (
-                not event.raw.get("sender_verified", False)
-                or not verified_sender
+                not verified_sender
                 or verified_sender.casefold() != event.user_id.casefold()
             ):
                 return _reject_unallowed_sender(event, reason="sender_not_verified")
