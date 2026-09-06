@@ -464,6 +464,19 @@ def test_config_validate_returns_issues(tmp_path):
     assert isinstance(body["issues"], list)
 
 
+def test_config_validate_reports_inbound_startup_requirement(tmp_path):
+    import dataclasses
+
+    hive = _hive(tmp_path)
+    hive.config = dataclasses.replace(hive.config, telegram_token="token")
+
+    with _client(hive) as c:
+        body = c.get("/config/validate", headers=_TOKEN).json()
+
+    assert body["valid"] is False
+    assert any("TELEGRAM_WEBHOOK_SECRET" in issue for issue in body["issues"])
+
+
 def test_tools_list_returns_registered_tools(tmp_path):
     hive = _hive(tmp_path)
     with _client(hive) as c:

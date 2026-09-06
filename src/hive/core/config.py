@@ -261,8 +261,35 @@ class HiveConfig:
             issues.append("HIVE_EXEC_MODEL is empty")
         if self.secret == "change_me":
             issues.append("HIVE_SECRET is the default 'change_me' — change it for production")
-        if self.production_mode and self.secret == "change_me":
-            issues.append("HIVE_PRODUCTION=true requires HIVE_SECRET to be changed from 'change_me'")
+        if self.production_mode and (not self.secret.strip() or self.secret == "change_me"):
+            issues.append(
+                "HIVE_PRODUCTION=true requires a non-empty HIVE_SECRET different from 'change_me'"
+            )
+        if self.autonomy_enabled and not self.approver_key:
+            issues.append(
+                "HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY to be configured"
+            )
+        if self.telegram_token and not self.telegram_webhook_secret:
+            issues.append("TELEGRAM_BOT_TOKEN requires TELEGRAM_WEBHOOK_SECRET to be configured")
+        if self.telegram_token and not (
+            self.telegram_allowed_user_ids or self.telegram_allowed_chat_ids
+        ):
+            issues.append(
+                "TELEGRAM_BOT_TOKEN requires HIVE_TELEGRAM_ALLOWED_USER_IDS or "
+                "HIVE_TELEGRAM_ALLOWED_CHAT_IDS to be configured"
+            )
+        if self.slack_signing_secret and not self.slack_allowed_user_ids:
+            issues.append(
+                "HIVE_SLACK_SIGNING_SECRET requires HIVE_SLACK_ALLOWED_USER_IDS to be configured"
+            )
+        if self.discord_public_key and not self.discord_allowed_user_ids:
+            issues.append(
+                "HIVE_DISCORD_PUBLIC_KEY requires HIVE_DISCORD_ALLOWED_USER_IDS to be configured"
+            )
+        if self.smtp_webhook_secret and not self.email_allowed_senders:
+            issues.append(
+                "HIVE_SMTP_WEBHOOK_SECRET requires HIVE_EMAIL_ALLOWED_SENDERS to be configured"
+            )
         if self.port < 1 or self.port > 65535:
             issues.append(f"HIVE_PORT={self.port} is out of range")
         if self.daily_call_cap < 1:

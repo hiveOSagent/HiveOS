@@ -376,6 +376,27 @@ def test_hiveos_build_rejects_empty_secret_in_explicit_production_mode(tmp_path,
         HiveOS.build(cfg, router=object())
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected_issue"),
+    [
+        ({"production_mode": True, "secret": ""}, "non-empty HIVE_SECRET"),
+        ({"autonomy_enabled": True}, "HIVE_APPROVER_KEY"),
+        ({"telegram_token": "token"}, "TELEGRAM_WEBHOOK_SECRET"),
+        (
+            {"telegram_token": "token", "telegram_webhook_secret": "secret"},
+            "HIVE_TELEGRAM_ALLOWED",
+        ),
+        ({"slack_signing_secret": "secret"}, "HIVE_SLACK_ALLOWED_USER_IDS"),
+        ({"discord_public_key": "key"}, "HIVE_DISCORD_ALLOWED_USER_IDS"),
+        ({"smtp_webhook_secret": "secret"}, "HIVE_EMAIL_ALLOWED_SENDERS"),
+    ],
+)
+def test_config_validate_reports_inbound_startup_requirements(tmp_path, overrides, expected_issue):
+    cfg = HiveConfig(**{**_base_cfg(tmp_path), **overrides})
+
+    assert any(expected_issue in issue for issue in cfg.validate())
+
+
 def test_hiveconfig_to_safe_dict_redacts_secrets(tmp_path, monkeypatch):
     monkeypatch.setenv("MINIMAX_API_KEY", "secret-key-xyz")
     monkeypatch.setenv("HIVE_GITHUB_TOKEN", "ghp_faketoken")
