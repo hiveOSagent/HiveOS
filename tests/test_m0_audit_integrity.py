@@ -140,11 +140,19 @@ def test_audit_readers_wait_for_an_inflight_record(tmp_path, monkeypatch):
     assert audit.verify_integrity() == {"valid": True, "checked": 1, "error": None}
 
 
+def test_audit_summary_readers_do_not_deadlock_on_their_lock(tmp_path):
+    audit = AuditLog(tmp_path / "audit.sqlite")
+    audit.record({"tool": "deploy", "status": "ok"})
+    audit.record({"tool": "deploy", "status": "failed"})
+
+    assert audit.stats()["total"] == 2
+    assert audit.error_rate() == 0.5
+
+
 def test_gateway_lifecycle_rejects_new_acquire_during_final_shutdown(tmp_path):
     hive = _hive(tmp_path)
     hive.acquire_gateway_lifespan()
-    assert hive.release_gateway_lifespan() is True
-    assert hive.begin_gateway_shutdown() is True
+    assert hive.release_gateway_lifespan(claim_final_shutdown=True) is True
     with pytest.raises(RuntimeError, match="shutting down or closed"):
         hive.acquire_gateway_lifespan()
 
@@ -169,7 +177,7 @@ def test_gateway_startup_failure_releases_its_lifespan(tmp_path, monkeypatch):
             pass
 
     hive.acquire_gateway_lifespan()
-    assert hive.release_gateway_lifespan() is True
+    assert hive.release_gateway_lifespan(claim_final_shutdown=True) is True
 
 
 def test_runtime_close_is_idempotent(tmp_path):

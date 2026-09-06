@@ -162,19 +162,16 @@ class HiveOS:
                 raise RuntimeError("cannot start a gateway on a runtime that is shutting down or closed")
             self._gateway_lifespans += 1
 
-    def release_gateway_lifespan(self) -> bool:
-        """Release one gateway app and report whether no gateway remains."""
+    def release_gateway_lifespan(self, *, claim_final_shutdown: bool = False) -> bool:
+        """Release one gateway app and atomically claim final shutdown when requested."""
         with self._gateway_lifecycle_lock:
             if self._gateway_lifespans <= 0:
                 log.warning("gateway lifespan released without a matching acquire")
                 return False
             self._gateway_lifespans -= 1
-            return self._gateway_lifespans == 0
-
-    def begin_gateway_shutdown(self) -> bool:
-        """Atomically claim final shutdown when no gateway lifespan remains."""
-        with self._gateway_lifecycle_lock:
-            if self._gateway_lifecycle_state != "open" or self._gateway_lifespans:
+            if self._gateway_lifespans or not claim_final_shutdown:
+                return False
+            if self._gateway_lifecycle_state != "open":
                 return False
             self._gateway_lifecycle_state = "closing"
             return True

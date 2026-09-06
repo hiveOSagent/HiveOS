@@ -322,14 +322,14 @@ class AuditLog:
         """Return audit summary grouped by tool and status (for dashboard/monitoring)."""
         with self._lock:
             by_tool = {}
-            rows = self._fetchall(
+            rows = self._db.execute(
                 "SELECT tool, status, COUNT(*) AS n FROM audit_log GROUP BY tool, status"
-            )
+            ).fetchall()
             for r in rows:
                 tool_entry = by_tool.setdefault(r["tool"], {"total": 0, "by_status": {}})
                 tool_entry["total"] += r["n"]
                 tool_entry["by_status"][r["status"]] = r["n"]
-            total_row = self._fetchone("SELECT COUNT(*) AS n FROM audit_log")
+            total_row = self._db.execute("SELECT COUNT(*) AS n FROM audit_log").fetchone()
             return {"total": int(total_row["n"]), "by_tool": by_tool}
 
     def search(self, *, tool: str | None = None, status: str | None = None,
@@ -365,16 +365,16 @@ class AuditLog:
         Returns a float in [0.0, 1.0]; 0.0 if no entries in window."""
         with self._lock:
             cutoff = self._clock() - window_hours * 3600
-            row_total = self._fetchone(
+            row_total = self._db.execute(
                 "SELECT COUNT(*) AS n FROM audit_log WHERE ts >= ?", (cutoff,)
-            )
+            ).fetchone()
             total = int(row_total["n"]) if row_total else 0
             if total == 0:
                 return 0.0
-            row_errors = self._fetchone(
+            row_errors = self._db.execute(
                 "SELECT COUNT(*) AS n FROM audit_log WHERE ts >= ? AND status != 'ok'",
                 (cutoff,),
-            )
+            ).fetchone()
             errors = int(row_errors["n"]) if row_errors else 0
             return round(errors / total, 4)
 
