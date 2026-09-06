@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from urllib.parse import quote
 
 from hive.core import config, credentials
 from hive.core.types import ToolResult
@@ -146,6 +147,20 @@ def test_web_get_refuses_url_containing_configured_secret(monkeypatch) -> None:
     dispatch = asyncio.run(
         ToolExecutor({"web_get": WebGet()}).execute(
             "web_get", {"url": "https://example.invalid/?token=synthetic-secret-value"}
+        )
+    )
+
+    assert dispatch.status is DispatchStatus.ERROR
+    assert "configured secret" in (dispatch.error or "")
+
+
+def test_web_get_refuses_percent_encoded_configured_secret(monkeypatch) -> None:
+    secret = "synthetic secret/value"
+    monkeypatch.setenv("HIVE_TEST_API_TOKEN", secret)
+
+    dispatch = asyncio.run(
+        ToolExecutor({"web_get": WebGet()}).execute(
+            "web_get", {"url": f"https://example.invalid/?token={quote(secret, safe='')}"}
         )
     )
 

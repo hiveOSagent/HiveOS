@@ -47,7 +47,11 @@ def _keyring() -> Any:
         raise CredentialStoreError("keyring dependency is unavailable") from exc
     backend = keyring.get_keyring()
     backend_module = type(backend).__module__.casefold()
-    if backend_module.startswith(("keyring.backends.fail", "keyrings.alt")):
+    backend_name = type(backend).__name__.casefold()
+    if (
+        backend_module.startswith(("keyring.backends.fail", "keyrings.alt"))
+        or "plaintext" in backend_name
+    ):
         raise CredentialStoreError(
             "no secure OS credential backend is configured; refusing plaintext credential storage"
         )

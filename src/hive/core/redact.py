@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 from typing import Any, Iterable
+from urllib.parse import quote, quote_plus, unquote
 
 # Exact-match (case-insensitive) arg/field names whose VALUE is always a secret.
 _SENSITIVE_KEYS = frozenset({
@@ -78,7 +79,8 @@ def clear_registered_secret_values() -> None:
 
 def contains_known_secret(text: str, *, env: dict[str, str] | None = None) -> bool:
     """Return whether text contains any configured secret value."""
-    return any(value in text for value in known_secret_values(env))
+    decoded = unquote(text)
+    return any(value in text or value in decoded for value in known_secret_values(env))
 
 
 def redact_known_secrets(text: str, *, env: dict[str, str] | None = None) -> str:
@@ -86,6 +88,8 @@ def redact_known_secrets(text: str, *, env: dict[str, str] | None = None) -> str
     redacted = redact_text(text)
     for value in sorted(known_secret_values(env), key=len, reverse=True):
         redacted = redacted.replace(value, _MASK)
+        redacted = redacted.replace(quote(value, safe=""), _MASK)
+        redacted = redacted.replace(quote_plus(value, safe=""), _MASK)
     return redacted
 
 

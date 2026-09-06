@@ -625,7 +625,6 @@ def test_plaintext_keyring_fallback_is_rejected(monkeypatch):
     class PlaintextKeyring:
         pass
 
-    PlaintextKeyring.__module__ = "keyrings.alt.file"
     monkeypatch.setattr(keyring, "get_keyring", PlaintextKeyring)
     with pytest.raises(credentials.CredentialStoreError, match="secure OS credential backend"):
         credentials._keyring()
