@@ -871,6 +871,8 @@ class HiveOS:
         # before any agent component is constructed so it cannot be inherited
         # by agent logic or child processes.
         telegram_approval_verifier = TelegramApprovalVerifier.from_environment(cfg.state_db)
+        from hive.observability.audit import AUDIT_INTEGRITY_KEY_ENV, consume_audit_integrity_key
+        audit_integrity_key = consume_audit_integrity_key()
         if cfg.production_mode and (not cfg.secret.strip() or cfg.secret == "change_me"):
             raise RuntimeError(
                 "HIVE_PRODUCTION=true requires a non-empty HIVE_SECRET different from 'change_me'"
@@ -883,6 +885,10 @@ class HiveOS:
             raise RuntimeError(
                 "HIVE_PRODUCTION=true with TELEGRAM_BOT_TOKEN requires "
                 "HIVE_TELEGRAM_APPROVAL_SIGNING_KEY to be configured"
+            )
+        if cfg.production_mode and audit_integrity_key is None:
+            raise RuntimeError(
+                "HIVE_PRODUCTION=true requires HIVE_AUDIT_INTEGRITY_KEY to protect audit integrity"
             )
         if cfg.telegram_token and not cfg.telegram_webhook_secret:
             raise RuntimeError(
@@ -918,6 +924,7 @@ class HiveOS:
         # key into the assembled agent process after the verifier consumed it.
         import os
         os.environ.pop("HIVE_TELEGRAM_APPROVAL_SIGNING_KEY", None)
+        os.environ.pop(AUDIT_INTEGRITY_KEY_ENV, None)
         # The global operational wrapper owns only state around the immutable gate.
         # Binding it here makes restart rehydration use the assembled runtime's DB.
         from hive.core.approval_enhancements import enhance
@@ -1011,7 +1018,7 @@ class HiveOS:
                                   deploy_ssh_key=cfg.deploy_ssh_key,
                                   stripe_secret_key=cfg.stripe_secret_key,
                                   stripe_customer_id=cfg.stripe_customer_id)
-        audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
+        audit_log = AuditLog(cfg.data_dir / "audit.sqlite", integrity_key=audit_integrity_key)
         _tool_timeout = cfg.tool_timeout if cfg.tool_timeout > 0 else None
         tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record,
                                      timeout=_tool_timeout)

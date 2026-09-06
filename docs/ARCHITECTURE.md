@@ -268,13 +268,16 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   redacted before they can reach model context or audit consumers, and outbound
   `web_get` URLs containing configured secret values are refused.
 - **M0 audit integrity boundary:** audit rows carry redacted arguments, actor/principal
-  attribution, and a SHA-256 hash chain persisted in `audit_meta`. `GET /audit/verify`
+  attribution, and a SHA-256 hash chain persisted in `audit_meta`. Production additionally
+  requires `HIVE_AUDIT_INTEGRITY_KEY`, consumed before agent assembly and excluded from child
+  environments. It HMAC-signs the chain anchor, head, row count, and row-id range, so a local
+  SQLite writer cannot make a rebuilt chain verify without that independent key. `GET /audit/verify`
   exposes integrity evidence to the normal gateway token, while destructive
   `DELETE /audit/purge` requires the out-of-band approver credential. Retention and
   explicit clearing reseal the retained chain segment; direct row edits or deletions
   that do not also rewrite chain metadata are detected by verification. This is
-  tamper-evident local storage, not a substitute for an external immutable anchor
-  against an attacker with unrestricted SQLite write access. SQLite files receive
+  tamper-evident local storage, not a substitute for a remote immutable log store
+  against an attacker who can obtain the integrity key or control the running process. SQLite files receive
   restrictive owner permissions where the host filesystem supports them. Audit reads
   and gateway shutdown serialize with writers, preventing partially written audit rows
   and reuse of resources that are closing. Injected `create_app(hive)` instances release
@@ -337,7 +340,7 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   agent limits (`HIVE_MAX_ITERATIONS`, `HIVE_MAX_PER_TOOL`, `HIVE_SELFMOD_THRESHOLD`,
   `HIVE_TOOL_TIMEOUT`), GitHub
   (`HIVE_GITHUB_*`), Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`,
-  `HIVE_TELEGRAM_APPROVAL_SIGNING_KEY`), sandbox
+  `HIVE_TELEGRAM_APPROVAL_SIGNING_KEY`, `HIVE_AUDIT_INTEGRITY_KEY`), sandbox
   (`HIVE_SANDBOX_IMAGE`), MCP (`HIVE_MCP_SERVERS`). Pricing overrides via
   `HIVE_PRICE_<MODEL>_{IN,OUT}`. Secrets may live in the OS keyring, with only their
   names recorded in the 0o600 credential manifest (`credentials.save`).

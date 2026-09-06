@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -12,11 +13,13 @@ from starlette.testclient import TestClient
 
 from hive.core.approval_enhancements import enhance
 from hive.core.config import HiveConfig
+from hive.core.self_mod import _default_run
 from hive.core.types import ToolCall
 from hive.gateway.app import create_app
 from hive.llm.adapters.base import CompletionResult
-from hive.observability.audit import AuditLog
+from hive.observability.audit import AUDIT_INTEGRITY_KEY_ENV, AuditLog
 from hive.runtime import HiveOS
+from hive.tools.shell_provider import LocalShellProvider
 
 
 class _Router:
@@ -63,6 +66,69 @@ def test_audit_chain_detects_manual_update(tmp_path):
     check = AuditLog(path).verify_integrity()
     assert check["valid"] is False
     assert "digest" in check["error"]
+
+
+def test_keyed_integrity_anchor_detects_a_rebuilt_local_chain(tmp_path):
+    """A SQLite writer without the key cannot make a rebuilt chain authentic."""
+    path = tmp_path / "audit.sqlite"
+    key = b"synthetic-audit-anchor-key-with-sufficient-length"
+    audit = AuditLog(path, integrity_key=key)
+    audit.record({"tool": "first", "status": "ok"})
+    audit.record({"tool": "second", "status": "ok"})
+    audit.close()
+
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE audit_log SET status='tampered' WHERE id=1")
+        # Rebuild the public, unkeyed row hashes and chain head, but not the
+        # externally keyed anchor signature.
+        rows = db.execute("SELECT * FROM audit_log ORDER BY id").fetchall()
+        previous = ""
+        for row in rows:
+            digest = AuditLog._row_digest(
+                row_id=row[0], ts=row[1], tool=row[2], status=row[3], approved=bool(row[4]),
+                error=row[5], args=row[6], actor=row[7], principal=row[8], prev_digest=previous,
+            )
+            db.execute("UPDATE audit_log SET prev_digest=?, digest=? WHERE id=?", (previous, digest, row[0]))
+            previous = digest
+        db.execute("UPDATE audit_meta SET value=? WHERE key='chain_head'", (previous,))
+
+    check = AuditLog(path, integrity_key=key).verify_integrity()
+    assert check["valid"] is False
+    assert "anchor" in check["error"]
+
+
+def test_production_startup_requires_audit_integrity_key(tmp_path, monkeypatch):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    production = replace(cfg, production_mode=True, secret="production-secret")
+    monkeypatch.delenv("HIVE_AUDIT_INTEGRITY_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="HIVE_AUDIT_INTEGRITY_KEY"):
+        HiveOS.build(production, router=_Router())
+
+
+def test_runtime_consumes_audit_integrity_key_before_agent_assembly(tmp_path, monkeypatch):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    monkeypatch.setenv("HIVE_AUDIT_INTEGRITY_KEY", "synthetic-audit-anchor-secret")
+
+    hive = HiveOS.build(cfg, router=_Router())
+
+    assert "HIVE_AUDIT_INTEGRITY_KEY" not in __import__("os").environ
+    hive.audit_log.record({"tool": "test", "status": "ok"})
+    assert hive.audit_log.verify_integrity()["valid"] is True
+
+
+def test_child_processes_cannot_read_audit_integrity_key(tmp_path, monkeypatch):
+    monkeypatch.setenv(AUDIT_INTEGRITY_KEY_ENV, "synthetic-audit-anchor-secret")
+    code = f"import os; print(os.environ.get('{AUDIT_INTEGRITY_KEY_ENV}', 'MISSING'))"
+    command = f'"{sys.executable}" -c "{code}"'
+
+    shell_result = asyncio.run(LocalShellProvider().run(command))
+    self_mod_result = asyncio.run(_default_run([sys.executable, "-c", code], str(tmp_path)))
+
+    assert shell_result.returncode == 0
+    assert shell_result.stdout.strip() == "MISSING"
+    assert self_mod_result[0] == 0
+    assert self_mod_result[1].strip() == "MISSING"
 
 
 def test_audit_chain_does_not_reseal_blank_digest_after_restart(tmp_path):
