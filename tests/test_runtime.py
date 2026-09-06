@@ -976,10 +976,8 @@ def test_self_improve_from_symptom_strips_markdown_fences_and_handles_invalid_it
     assert seen == [0, 0, 0]
 
 
-def test_diagnoser_sets_target_files_and_code_on_edit(tmp_path):
-    """Edit(...) built by the diagnoser must carry target_files always, and
-    code only for CREATE_FILE .py — otherwise run_all_checks() silently no-ops
-    on every real self-mod proposal (the Pillar-4 safety-bypass bug)."""
+def test_diagnoser_sets_target_files_and_payload_metadata_on_edit(tmp_path):
+    """Diagnoser edits carry targets and scan every payload for dangerous patterns."""
     cfg = _config(tmp_path)
     router = _ScriptRouter([
         CompletionResult(text=json.dumps([{
@@ -1015,7 +1013,8 @@ def test_diagnoser_sets_target_files_and_code_on_edit(tmp_path):
 
     patch_edit = captured[1][0]
     assert patch_edit.target_files == ["docs/NOTES.md"]
-    assert patch_edit.code is None  # fragment, not full file — intentionally not parsed
+    assert patch_edit.code == "Y"
+    assert patch_edit.code_is_complete_file is False
 
 
 def test_diagnoser_code_scoping_is_case_insensitive_for_py_extension(tmp_path):
@@ -1081,7 +1080,7 @@ def test_dangerous_create_file_edit_is_escalated_not_silently_applied(tmp_path):
 
     assert len(outcomes) == 1
     out = outcomes[0]
-    assert out.status == "escalated_safety", out.detail
+    assert out.status == "pending_approval", out.detail
     assert out.tier == RiskTier.REVIEW
     assert any(f["check"] == "dangerous_patterns" for f in out.safety_findings)
     assert fake_mod.calls == 0, "dangerous CREATE_FILE must NOT reach SelfModifier.propose() AUTO-applied"

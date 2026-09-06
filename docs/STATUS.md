@@ -121,6 +121,14 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   anchor against unrestricted database writes. Audit reads and gateway shutdown
   serialize with writers; only the `hive serve` gateway owns final shutdown of its
   shared runtime.
+- **M0 self-modification risk containment (issue #147):** deterministic tiering
+  raises AUTO operations to REVIEW for normalized sensitive paths. The diagnoser
+  rejects non-document `EDIT_DOCS` targets, checks dangerous patterns in every
+  payload, and parses syntax only for complete Python files. The self-modifier
+  verifies Git's tracked and untracked change set both after apply and after tests;
+  mismatches, protected changes, and actual REVIEW-floor paths cannot be committed
+  by the AUTO flow. Human-approved REVIEW edits retain the same protected-file and
+  Git-diff safeguards.
 - **M0 command/file containment (issue #122):** the approval bridge classifies shell
   commands fail-closed, allowing only a small read-only command set and routing
   unknown, malformed, chained, or destructive forms to approval. Protected paths are

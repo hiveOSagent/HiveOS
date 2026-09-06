@@ -165,13 +165,15 @@ def test_diagnoser_parses_edit_docs_json(tmp_path):
         "op": "edit_docs",
         "summary": "update readme",
         "rationale": "out of date",
+        "path": "README.md",
+        "old_text": "",
+        "new_text": "updated",
     }])
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     hive = HiveOS.build(cfg, router=_EditRouter(payload))
     outcomes = asyncio.run(hive.self_improve_from_symptom("test symptom"))
-    # EDIT_DOCS is AUTO tier — will attempt worktree propose; in test env git
-    # will fail (not a real repo), so outcome.status == "failed" is expected.
-    # What matters: outcomes is non-empty and not silently discarded.
+    # A valid documentation path reaches the self-mod flow; this test only
+    # verifies that a well-formed JSON edit is not discarded.
     assert isinstance(outcomes, list)
     assert len(outcomes) == 1
 

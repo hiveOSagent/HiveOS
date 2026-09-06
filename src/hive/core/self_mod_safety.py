@@ -207,7 +207,9 @@ def run_all_checks(edit: "Edit", *, before_files: list[str] | None = None,
 
     `code` is the textual payload of the edit (Python body, patch, script).
     If absent, syntax/dangerous-pattern checks are skipped — the caller may
-    not have the code in hand yet. `before_files`/`after_files` are optional
+    not have the code in hand yet. Dangerous-pattern checks run for every
+    payload; syntax runs only for a complete file because replacement fragments
+    are not valid standalone modules. `before_files`/`after_files` are optional
     file-list snapshots for test-coverage regression detection.
 
     `check_protected_paths` always runs against the edit's planned target
@@ -216,9 +218,11 @@ def run_all_checks(edit: "Edit", *, before_files: list[str] | None = None,
     """
     results: list[SafetyCheckResult] = []
 
-    # python_syntax + dangerous_patterns need code
+    # Dangerous patterns apply to every payload. Syntax is scoped to complete
+    # files, avoiding false critical findings for valid replacement fragments.
     if code is not None:
-        results.append(check_python_syntax(code))
+        if getattr(edit, "code_is_complete_file", True):
+            results.append(check_python_syntax(code))
         results.append(check_dangerous_patterns(code))
 
     # file-level checks
