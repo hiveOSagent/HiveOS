@@ -254,9 +254,10 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   allowlist. Telegram requires its Bot API webhook secret plus an allowed user or chat;
   Slack and Discord require their respective allowed sender lists. Email additionally
   requires a trusted ingress-provided `X-Verified-Sender` matching the parsed `From`
-  address, set only after the ingress has verified aligned DMARC. Missing
-  configuration fails at `HiveOS.build()` and non-allowlisted input is tagged
-  `untrusted`, acknowledged, and discarded without calling `hive.ask()`. Telegram
+  address, set only after the ingress has verified aligned DMARC. `HiveConfig.validate()`
+  and `HiveOS.build()` apply the same missing-configuration checks, and non-allowlisted
+  input is tagged `untrusted`, acknowledged, and discarded without calling `hive.ask()`.
+  Telegram
   applies the same 1 MiB request cap as the other inbound webhooks.
   Email ingress must strip untrusted authentication headers and add its own
   provider-verified `X-Verified-Sender` assertion; Hive does not parse

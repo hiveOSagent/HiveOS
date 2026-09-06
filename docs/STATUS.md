@@ -101,7 +101,8 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   `hive.ask()`. Email also requires a trusted ingress sender header matching `From` and
   set only after provider-verified DMARC alignment. Refused input is tagged `untrusted` then discarded. Telegram additionally
   requires its Bot API webhook secret and shares the 1 MiB body cap used by the other
-  webhooks. Missing allowlist/secret configuration fails closed at startup.
+  webhooks. Missing allowlist/secret configuration is reported by `/config/validate`
+  and fails closed at startup.
   `HIVE_PRODUCTION=true` rejects the default gateway secret; the wider HIVE-009 content
   envelope remains an M2 follow-up.
   Focused configuration and webhook coverage passes locally.
