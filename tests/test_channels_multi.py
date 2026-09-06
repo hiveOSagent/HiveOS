@@ -777,6 +777,26 @@ def test_email_webhook_requires_verified_sender_header(tmp_path, monkeypatch):
     hive.ask.assert_not_awaited()
 
 
+def test_email_webhook_rejects_mismatched_verified_sender(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    hive = _build_hive(tmp_path, smtp_webhook_secret="secret",
+                       email_allowed_senders=frozenset({"alice@example.com"}))
+    ask = AsyncMock()
+    monkeypatch.setattr(type(hive), "ask", ask)
+    with TestClient(create_app(hive)) as client:
+        response = client.post(
+            "/email/webhook",
+            content=b"From: alice@example.com\nAuthentication-Results: dmarc=pass\n\nhi",
+            headers={
+                "X-Webhook-Secret": "secret",
+                "X-Verified-Sender": "intruder@example.com",
+            },
+        )
+    assert response.json() == {"ok": True, "handled": False, "reason": "sender_not_verified"}
+    hive.ask.assert_not_awaited()
+
+
 # --- Optional: gateway WITHOUT channels configured ----------------------------
 
 def test_webhooks_absent_when_config_empty(tmp_path):
