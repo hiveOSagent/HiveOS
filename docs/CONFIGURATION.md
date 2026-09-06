@@ -97,6 +97,7 @@ cost from `INFERENCE_END` events. Snapshot available at `GET /budget`.
 | `HIVE_HOST` | `0.0.0.0` | FastAPI bind address |
 | `HIVE_PORT` | `8088` | FastAPI bind port |
 | `HIVE_SECRET` | `change_me` | Bearer token for all `/chat`, `/budget`, `/approvals`, `/telemetry`, `/audit`, `/tasks`, `/traces` endpoints |
+| `HIVE_PRODUCTION` | `false` | Set `true` for a deployed gateway; startup then rejects the default `HIVE_SECRET=change_me`. |
 | `HIVE_CORS_ORIGINS` | `*` | CORS allowed origins (comma-separated or `*` for all). Restrict to your domain in production. |
 | `HIVE_MAX_MESSAGE_LEN` | `32000` | Maximum chat message length in characters. Requests exceeding this return HTTP 422. |
 | `HIVE_WS_IDLE_TIMEOUT` | `300` | WebSocket idle timeout in seconds. Connections with no messages close after this duration. |
@@ -174,7 +175,9 @@ Optional. Set to enable the Telegram webhook endpoint and `external_message` too
 | Variable | Default | Notes |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | *(empty)* | BotFather token; also activates `ExternalMessage` tool (telegram channel) |
-| `TELEGRAM_WEBHOOK_SECRET` | *(empty)* | Validated from `X-Telegram-Bot-Api-Secret-Token` header; leave empty to skip verification (dev) |
+| `TELEGRAM_WEBHOOK_SECRET` | *(empty)* | Required when `TELEGRAM_BOT_TOKEN` enables the inbound webhook; validated from `X-Telegram-Bot-Api-Secret-Token`. |
+| `HIVE_TELEGRAM_ALLOWED_USER_IDS` | *(empty)* | Comma-separated Telegram user IDs. At least this or the chat allowlist is required for the inbound webhook. |
+| `HIVE_TELEGRAM_ALLOWED_CHAT_IDS` | *(empty)* | Comma-separated Telegram chat IDs. At least this or the user allowlist is required for the inbound webhook. |
 
 ---
 
@@ -191,6 +194,19 @@ default Telegram. All six variables must be set for the respective channel to wo
 | `HIVE_SMTP_PASS` | *(empty)* | SMTP password or app-password (use app-password for Gmail). |
 | `HIVE_SMTP_TO` | *(empty)* | Recipient address for Hive-generated emails. |
 | `HIVE_SLACK_WEBHOOK` | *(empty)* | Slack incoming webhook URL. Leave empty → Slack disabled. |
+
+### Inbound sender allowlists
+
+Inbound webhooks authenticate the platform request and separately authorize the
+human sender. Every enabled inbound Slack, Discord, or email surface fails
+closed at startup unless its corresponding allowlist is configured. A request
+from a sender outside the list is acknowledged without reaching `hive.ask()`.
+
+| Variable | Required when | Notes |
+|---|---|---|
+| `HIVE_SLACK_ALLOWED_USER_IDS` | `HIVE_SLACK_SIGNING_SECRET` is set | Comma-separated Slack user IDs from the signed event payload. |
+| `HIVE_DISCORD_ALLOWED_USER_IDS` | `HIVE_DISCORD_PUBLIC_KEY` is set | Comma-separated Discord user IDs from the verified interaction. |
+| `HIVE_EMAIL_ALLOWED_SENDERS` | `HIVE_SMTP_WEBHOOK_SECRET` is set | Comma-separated sender email addresses; compared case-insensitively. |
 
 ---
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(slots=True)
@@ -27,6 +27,9 @@ class MessageEvent:
     message_id: str = ""
     platform: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
+    # Gateway policy may downgrade an event before it is rejected.  This keeps
+    # the trust decision explicit at the transport-to-core boundary.
+    trust: Literal["trusted", "untrusted"] = "trusted"
 
 
 @dataclass(slots=True)

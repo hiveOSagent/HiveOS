@@ -119,11 +119,12 @@ def test_config_validate_default_secret(tmp_path):
         exec_model="MiniMax-M3", exec_fallback_model="MiniMax-M2.7", aux_model="MiniMax-M2.7",
         planner_cmd="codex", planner_enabled=False, planner_timeout=120.0,
         remains_url="", daily_call_cap=3000, window_warn_pct=70.0,
-        host="0.0.0.0", port=8088, secret="change_me",
+        host="0.0.0.0", port=8088, secret="change_me", production_mode=False,
         mnemosyne_mcp_url="", mnemosyne_home=tmp_path, obsidian_vault=tmp_path,
         heartbeat_sec=900, max_concurrent_agents=3,
         github_token="", github_repo="", github_owner="",
         telegram_token="", telegram_webhook_secret="",
+        telegram_allowed_user_ids=frozenset(), telegram_allowed_chat_ids=frozenset(),
         sandbox_image="", mcp_servers=(), max_iterations=30, max_per_tool=50,
         selfmod_failure_threshold=3, tool_timeout=60.0,
         shell_provider="local", shell_docker_image="alpine:latest",
@@ -133,6 +134,8 @@ def test_config_validate_default_secret(tmp_path):
         slack_bot_token="", slack_signing_secret="",
         discord_bot_token="", discord_public_key="", discord_application_id="",
         smtp_from="", smtp_webhook_secret="",
+        slack_allowed_user_ids=frozenset(), discord_allowed_user_ids=frozenset(),
+        email_allowed_senders=frozenset(),
         deploy_ssh_host="", deploy_ssh_key="",
         stripe_secret_key="", stripe_customer_id="",
         learning_loop_enabled=False, learning_eval_timeout=60.0,
@@ -171,11 +174,12 @@ def _base_cfg(tmp_path=None):
         exec_model="MiniMax-M3", exec_fallback_model="MiniMax-M2.7", aux_model="MiniMax-M2.7",
         planner_cmd="codex", planner_enabled=False, planner_timeout=120.0,
         remains_url="", daily_call_cap=3000, window_warn_pct=70.0,
-        host="0.0.0.0", port=8088, secret="s3cr3t",
+        host="0.0.0.0", port=8088, secret="s3cr3t", production_mode=False,
         mnemosyne_mcp_url="", mnemosyne_home=p, obsidian_vault=p,
         heartbeat_sec=900, max_concurrent_agents=3,
         github_token="", github_repo="", github_owner="",
         telegram_token="", telegram_webhook_secret="",
+        telegram_allowed_user_ids=frozenset(), telegram_allowed_chat_ids=frozenset(),
         sandbox_image="", mcp_servers=(), max_iterations=30, max_per_tool=50,
         selfmod_failure_threshold=3, tool_timeout=60.0,
         shell_provider="local", shell_docker_image="alpine:latest",
@@ -185,6 +189,8 @@ def _base_cfg(tmp_path=None):
         slack_bot_token="", slack_signing_secret="",
         discord_bot_token="", discord_public_key="", discord_application_id="",
         smtp_from="", smtp_webhook_secret="",
+        slack_allowed_user_ids=frozenset(), discord_allowed_user_ids=frozenset(),
+        email_allowed_senders=frozenset(),
         deploy_ssh_host="", deploy_ssh_key="",
         stripe_secret_key="", stripe_customer_id="",
         learning_loop_enabled=False, learning_eval_timeout=60.0,
@@ -336,6 +342,29 @@ def test_hiveconfig_is_production_true_for_real_secret(tmp_path, monkeypatch):
     assert cfg.is_production() is True
 
 
+def test_hiveconfig_parses_inbound_sender_allowlists(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIVE_TELEGRAM_ALLOWED_USER_IDS", " 1,2 ,, ")
+    monkeypatch.setenv("HIVE_TELEGRAM_ALLOWED_CHAT_IDS", "-100, group")
+    monkeypatch.setenv("HIVE_SLACK_ALLOWED_USER_IDS", "U1,U2")
+    monkeypatch.setenv("HIVE_DISCORD_ALLOWED_USER_IDS", "D1")
+    monkeypatch.setenv("HIVE_EMAIL_ALLOWED_SENDERS", "Kamil@Example.com, other@example.com")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.telegram_allowed_user_ids == frozenset({"1", "2"})
+    assert cfg.telegram_allowed_chat_ids == frozenset({"-100", "group"})
+    assert cfg.slack_allowed_user_ids == frozenset({"U1", "U2"})
+    assert cfg.discord_allowed_user_ids == frozenset({"D1"})
+    assert cfg.email_allowed_senders == frozenset({"kamil@example.com", "other@example.com"})
+
+
+def test_hiveos_build_rejects_default_secret_in_explicit_production_mode(tmp_path, monkeypatch):
+    from hive.runtime import HiveOS
+
+    monkeypatch.setenv("HIVE_PRODUCTION", "true")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    with pytest.raises(RuntimeError, match="HIVE_PRODUCTION=true"):
+        HiveOS.build(cfg, router=object())
+
+
 def test_hiveconfig_to_safe_dict_redacts_secrets(tmp_path, monkeypatch):
     monkeypatch.setenv("MINIMAX_API_KEY", "secret-key-xyz")
     monkeypatch.setenv("HIVE_GITHUB_TOKEN", "ghp_faketoken")
@@ -344,6 +373,11 @@ def test_hiveconfig_to_safe_dict_redacts_secrets(tmp_path, monkeypatch):
     assert safe["secret"] == "***"
     assert safe["minimax_api_key"] == "***"
     assert safe["github_token"] == "***"
+    assert "telegram_allowed_user_ids" not in safe
+    assert "telegram_allowed_chat_ids" not in safe
+    assert "slack_allowed_user_ids" not in safe
+    assert "discord_allowed_user_ids" not in safe
+    assert "email_allowed_senders" not in safe
     # Non-secret fields are not redacted
     assert safe["exec_model"] == cfg.exec_model
     assert safe["port"] == cfg.port

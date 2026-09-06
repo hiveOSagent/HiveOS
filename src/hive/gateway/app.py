@@ -34,7 +34,7 @@ from fastapi.responses import StreamingResponse
 from hive.core.approval import gate
 from hive.core.approval_enhancements import DecisionOutcome, enhance
 from hive.gateway.auth import make_approver_dependency, make_auth_dependency, token_ok
-from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
+from hive.gateway.channels.base import ChannelAdapter, MessageEvent, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
 from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse
 from hive.runtime import HiveOS
@@ -47,6 +47,23 @@ MAX_WEBHOOK_BODY = 1_048_576
 _DASHBOARD_DIST = Path(__file__).parent.parent.parent.parent / "dashboard" / "dist"
 
 log = logging.getLogger("hive.gateway")
+
+
+def _sender_allowed(event: MessageEvent, *, allowed_users: frozenset[str],
+                    allowed_chats: frozenset[str] = frozenset(),
+                    casefold: bool = False) -> bool:
+    """Return whether an inbound event belongs to an explicitly allowed owner."""
+    normalize = str.casefold if casefold else str
+    user_id = normalize(event.user_id.strip()) if event.user_id else ""
+    chat_id = normalize(event.chat_id.strip()) if event.chat_id else ""
+    return user_id in allowed_users or chat_id in allowed_chats
+
+
+def _reject_unallowed_sender(event: MessageEvent) -> dict[str, object]:
+    """Acknowledge untrusted webhook input without placing it in a model turn."""
+    event.trust = "untrusted"
+    log.warning("%s webhook: refused non-allowlisted sender trust=untrusted", event.platform)
+    return {"ok": True, "handled": False, "reason": "sender_not_allowed"}
 
 
 def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastAPI:
@@ -1521,9 +1538,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         @app.post("/telegram/webhook")
         async def telegram_webhook(request: Request) -> dict:
             # Telegram authenticates webhooks via this header (set at setWebhook time).
-            if webhook_secret and request.headers.get(
+            if not webhook_secret or request.headers.get(
                     "X-Telegram-Bot-Api-Secret-Token") != webhook_secret:
                 raise HTTPException(status_code=401, detail="bad webhook secret")
+            body = await request.body()
+            if len(body) > MAX_WEBHOOK_BODY:
+                raise HTTPException(status_code=413, detail="payload too large")
             try:
                 update = await request.json()
             except Exception as exc:  # noqa: BLE001
@@ -1532,6 +1552,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             event = telegram.parse_update(update)
             if event is None:
                 return {"ok": True, "handled": False}  # nothing actionable
+            if not _sender_allowed(
+                event,
+                allowed_users=hive.config.telegram_allowed_user_ids,
+                allowed_chats=hive.config.telegram_allowed_chat_ids,
+            ):
+                return _reject_unallowed_sender(event)
             try:
                 reply = await hive.ask(event.text, session_id=f"telegram:{event.chat_id}",
                                       channel_hint="telegram")
@@ -1576,6 +1602,10 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             event = slack_channel.parse_update(payload)
             if event is None:
                 return {"ok": True, "handled": False}
+            if not _sender_allowed(
+                event, allowed_users=hive.config.slack_allowed_user_ids
+            ):
+                return _reject_unallowed_sender(event)
             try:
                 reply = await hive.ask(event.text, session_id=f"slack:{event.chat_id}",
                                        channel_hint="slack")
@@ -1615,6 +1645,10 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             event = discord_channel.parse_update(payload)
             if event is None:
                 return {"ok": True, "handled": False}
+            if not _sender_allowed(
+                event, allowed_users=hive.config.discord_allowed_user_ids
+            ):
+                return _reject_unallowed_sender(event)
             try:
                 reply = await hive.ask(event.text, session_id=f"discord:{event.chat_id}",
                                        channel_hint="discord")
@@ -1650,6 +1684,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             event = email_channel.parse_update({"raw_bytes": raw})
             if event is None:
                 return {"ok": True, "handled": False}
+            if not _sender_allowed(
+                event,
+                allowed_users=hive.config.email_allowed_senders,
+                casefold=True,
+            ):
+                return _reject_unallowed_sender(event)
             try:
                 # session_id uses message_id (unspoofable, globally unique), not
                 # chat_id — a crafted From header cannot reuse a past session.

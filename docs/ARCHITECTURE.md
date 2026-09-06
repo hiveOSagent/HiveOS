@@ -249,6 +249,15 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   from executing one rehydrated approval twice. The heartbeat records its
   failure-triggered self-modification cooldown before invoking the diagnoser, so a
   process restart cannot bypass that throttle.
+- **M0 inbound sender boundary (issue #150):** every enabled inbound channel has two
+  checks before a model turn: platform-request authentication and an explicit owner
+  allowlist. Telegram requires its Bot API webhook secret plus an allowed user or chat;
+  Slack, Discord, and email require their respective allowed sender lists. Missing
+  configuration fails at `HiveOS.build()` and non-allowlisted input is tagged
+  `untrusted`, acknowledged, and discarded without calling `hive.ask()`. Telegram
+  applies the same 1 MiB request cap as the other inbound webhooks.
+  `HIVE_PRODUCTION=true` also rejects the default gateway secret. The broader content
+  provenance envelope remains the dedicated M2 HIVE-009 follow-up.
 - **Hardening (M7):** secrets are masked by `core/redact.py` before hitting the audit
   trail/logs; tools self-report `available()` (unavailable ones are hidden from the model
   and refused by the executor); sessions get an out-of-band aux-model title

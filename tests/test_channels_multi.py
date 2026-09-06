@@ -587,7 +587,8 @@ def test_email_aclose_noop():
 # --- Gateway wiring ------------------------------------------------------------
 
 def test_slack_webhook_bad_signature_returns_401(tmp_path):
-    hive = _build_hive(tmp_path, slack_signing_secret="secret", slack_bot_token="xoxb")
+    hive = _build_hive(tmp_path, slack_signing_secret="secret", slack_bot_token="xoxb",
+                       slack_allowed_user_ids=frozenset({"U1"}))
     with TestClient(create_app(hive)) as c:
         r = c.post("/slack/webhook",
                    json={"type": "event_callback", "event": {"type": "message", "text": "hi",
@@ -596,7 +597,8 @@ def test_slack_webhook_bad_signature_returns_401(tmp_path):
 
 
 def test_slack_webhook_url_verification_returns_challenge(tmp_path):
-    hive = _build_hive(tmp_path, slack_signing_secret="secret")
+    hive = _build_hive(tmp_path, slack_signing_secret="secret",
+                       slack_allowed_user_ids=frozenset({"U1"}))
     payload = {"type": "url_verification", "challenge": "abc123"}
     body = json.dumps(payload).encode()
     headers = _sign_slack("secret", body)
@@ -607,7 +609,8 @@ def test_slack_webhook_url_verification_returns_challenge(tmp_path):
 
 
 def test_discord_webhook_bad_signature_returns_401(tmp_path):
-    hive = _build_hive(tmp_path, discord_public_key="ab" * 32)
+    hive = _build_hive(tmp_path, discord_public_key="ab" * 32,
+                       discord_allowed_user_ids=frozenset({"U1"}))
     with TestClient(create_app(hive)) as c:
         r = c.post("/discord/webhook", json={"t": 2, "d": {}})
         assert r.status_code == 401
@@ -615,7 +618,8 @@ def test_discord_webhook_bad_signature_returns_401(tmp_path):
 
 def test_discord_webhook_ping_returns_pong(tmp_path):
     _, _, public_hex = _sign_discord(b"")
-    hive = _build_hive(tmp_path, discord_public_key=public_hex)
+    hive = _build_hive(tmp_path, discord_public_key=public_hex,
+                       discord_allowed_user_ids=frozenset({"U1"}))
     body = json.dumps({"t": 0, "d": {}}).encode()
     _, headers, _ = _sign_discord(body)
     with TestClient(create_app(hive)) as c:
@@ -626,7 +630,8 @@ def test_discord_webhook_ping_returns_pong(tmp_path):
 
 
 def test_email_webhook_bad_secret_returns_401(tmp_path):
-    hive = _build_hive(tmp_path, smtp_webhook_secret="secret")
+    hive = _build_hive(tmp_path, smtp_webhook_secret="secret",
+                       email_allowed_senders=frozenset({"alice@x.com"}))
     with TestClient(create_app(hive)) as c:
         r = c.post("/email/webhook", content=b"From: x")
         assert r.status_code == 401
@@ -650,7 +655,8 @@ def test_email_webhook_processes_message_with_fake_channel(tmp_path, monkeypatch
 
     from hive.gateway.channels import email as email_mod
     monkeypatch.setattr(email_mod, "EmailChannel", FakeEmailChannel)
-    hive = _build_hive(tmp_path, smtp_webhook_secret="secret")
+    hive = _build_hive(tmp_path, smtp_webhook_secret="secret",
+                       email_allowed_senders=frozenset({"alice@x.com"}))
     fake = FakeEmailChannel()
     monkeypatch.setattr(email_mod, "EmailChannel", lambda **kw: fake)
     with TestClient(create_app(hive)) as c:
@@ -658,6 +664,80 @@ def test_email_webhook_processes_message_with_fake_channel(tmp_path, monkeypatch
                    headers={"X-Webhook-Secret": "secret"})
         assert r.status_code == 200
         assert fake.sent and fake.sent[0].text == "ok"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("slack_signing_secret", "secret", "HIVE_SLACK_ALLOWED_USER_IDS"),
+        ("discord_public_key", "ab" * 32, "HIVE_DISCORD_ALLOWED_USER_IDS"),
+        ("smtp_webhook_secret", "secret", "HIVE_EMAIL_ALLOWED_SENDERS"),
+    ],
+)
+def test_enabled_inbound_surface_requires_sender_allowlist(tmp_path, field, value, message):
+    with pytest.raises(RuntimeError, match=message):
+        _build_hive(tmp_path, **{field: value})
+
+
+def test_telegram_surface_requires_secret_and_allowlist(tmp_path):
+    with pytest.raises(RuntimeError, match="TELEGRAM_WEBHOOK_SECRET"):
+        _build_hive(tmp_path, telegram_token="token")
+    with pytest.raises(RuntimeError, match="HIVE_TELEGRAM_ALLOWED"):
+        _build_hive(tmp_path, telegram_token="token", telegram_webhook_secret="secret")
+
+
+def test_slack_webhook_refuses_unallowed_sender_before_model_turn(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    hive = _build_hive(tmp_path, slack_signing_secret="secret",
+                       slack_allowed_user_ids=frozenset({"U1"}))
+    ask = AsyncMock()
+    monkeypatch.setattr(type(hive), "ask", ask)
+    payload = {"type": "event_callback", "event": {
+        "type": "message", "text": "hi", "channel": "C1", "user": "U2", "ts": "1.0",
+    }}
+    body = json.dumps(payload).encode()
+    with TestClient(create_app(hive)) as client:
+        response = client.post("/slack/webhook", content=body, headers={
+            **_sign_slack("secret", body), "Content-Type": "application/json",
+        })
+    assert response.json() == {"ok": True, "handled": False, "reason": "sender_not_allowed"}
+    hive.ask.assert_not_awaited()
+
+
+def test_discord_webhook_refuses_unallowed_sender_before_model_turn(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    payload = {"t": 2, "d": {
+        "author": {"id": "U2"}, "content": "hi", "channel_id": "C1", "id": "m1",
+    }}
+    body = json.dumps(payload).encode()
+    _, headers, public_hex = _sign_discord(body)
+    hive = _build_hive(tmp_path, discord_public_key=public_hex,
+                       discord_allowed_user_ids=frozenset({"U1"}))
+    ask = AsyncMock()
+    monkeypatch.setattr(type(hive), "ask", ask)
+    with TestClient(create_app(hive)) as client:
+        response = client.post("/discord/webhook", content=body, headers={
+            **headers, "Content-Type": "application/json",
+        })
+    assert response.json() == {"ok": True, "handled": False, "reason": "sender_not_allowed"}
+    hive.ask.assert_not_awaited()
+
+
+def test_email_webhook_refuses_unallowed_sender_before_model_turn(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    hive = _build_hive(tmp_path, smtp_webhook_secret="secret",
+                       email_allowed_senders=frozenset({"alice@example.com"}))
+    ask = AsyncMock()
+    monkeypatch.setattr(type(hive), "ask", ask)
+    with TestClient(create_app(hive)) as client:
+        response = client.post("/email/webhook", content=b"From: intruder@example.com\n\nhi", headers={
+            "X-Webhook-Secret": "secret",
+        })
+    assert response.json() == {"ok": True, "handled": False, "reason": "sender_not_allowed"}
+    hive.ask.assert_not_awaited()
 
 
 # --- Optional: gateway WITHOUT channels configured ----------------------------
