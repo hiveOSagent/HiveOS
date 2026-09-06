@@ -39,9 +39,15 @@ os.environ.setdefault("HIVE_SMTP_HOST", "smtp.smoke")
 os.environ.setdefault("HIVE_SMTP_FROM", "hive@smoke")
 os.environ.setdefault("HIVE_SMTP_WEBHOOK_SECRET", "smoke-email-secret")
 
-from fastapi.testclient import TestClient
-from hive.gateway.app import create_app
-from hive.gateway.channels.base import ChannelAdapter, MessageEvent, OutgoingMessage, SendResult
+from fastapi.testclient import TestClient  # noqa: E402
+
+from hive.gateway.app import create_app  # noqa: E402
+from hive.gateway.channels.base import (  # noqa: E402
+    ChannelAdapter,
+    MessageEvent,
+    OutgoingMessage,
+    SendResult,
+)
 
 
 class FakeHive:
