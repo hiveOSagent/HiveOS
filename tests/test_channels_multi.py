@@ -777,6 +777,31 @@ def test_email_webhook_requires_verified_sender_header(tmp_path, monkeypatch):
     hive.ask.assert_not_awaited()
 
 
+def test_email_webhook_uses_trusted_header_not_body_authentication_results(
+    tmp_path, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    hive = _build_hive(tmp_path, smtp_webhook_secret="secret",
+                       email_allowed_senders=frozenset({"alice@example.com"}))
+    ask = AsyncMock(return_value="ok")
+    monkeypatch.setattr(type(hive), "ask", ask)
+    with TestClient(create_app(hive)) as client:
+        response = client.post(
+            "/email/webhook",
+            content=(
+                b"From: alice@example.com\n"
+                b"Authentication-Results: forged.example; dmarc=fail\n\nhi"
+            ),
+            headers={
+                "X-Webhook-Secret": "secret",
+                "X-Verified-Sender": "alice@example.com",
+            },
+        )
+    assert response.json() == {"ok": True, "handled": True}
+    hive.ask.assert_awaited_once()
+
+
 def test_email_webhook_rejects_mismatched_verified_sender(tmp_path, monkeypatch):
     from unittest.mock import AsyncMock
 
