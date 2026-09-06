@@ -6,11 +6,13 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **M0 issues #120 and #121** (out-of-band approver credential and
-mandatory autonomous self-mod sandbox, branch `codex/m0-selfmod-sandbox`, 2026-09-05).
-Verification snapshot: focused M0 **14 passed**; affected approval/config/autonomy/sandbox
+Last reconciled after **M0 issues #120-#122** (out-of-band approver credential,
+mandatory autonomous self-mod sandbox, and command/file containment, branch
+`codex/m0-command-containment`, 2026-09-06). Verification snapshot: focused M0
+**18 passed**; affected approval/config/autonomy/sandbox
 suites **290 passed**; full `pytest -q` **4151 passed,
-19 failed, 18 skipped, 12 warnings** on Windows. The full-suite failures are documented
+19 failed, 18 skipped, 12 warnings** on Windows (the current full run is **4169 passed**,
+with the same 19 baseline/platform failures). The full-suite failures are documented
 platform/baseline limitations, not an M0 pass claim.
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 
@@ -89,6 +91,13 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   candidate test commands are routed through the no-network Docker sandbox with only the
   candidate worktree mounted; supervised self-mod remains backward-compatible without an
   image. Regression coverage is in `tests/test_m0_selfmod_sandbox.py`.
+- **M0 command/file containment (issue #122):** the approval bridge classifies shell
+  commands fail-closed, allowing only a small read-only command set and routing
+  unknown, malformed, chained, or destructive forms to approval. Protected paths are
+  normalized case-insensitively, and `file_safety` uses the repository root
+  independent of CWD to deny sensitive repository reads/writes and root-escaping
+  symlinks. Regression coverage is in `tests/test_m0_command_containment.py`
+  (**18 focused tests**).
 - **Providers (M8):** Anthropic + Codex adapters behind `LLMAdapter`; `make_adapter(provider)`
   registry; executor switchable via `HIVE_EXEC_PROVIDER` (minimax|anthropic).
 - **Mission Control visibility (M10-a):** Four authenticated gateway endpoints expose runtime

@@ -39,6 +39,16 @@ and responsive audit is recorded in `docs/UI_AUDIT_2026-08-22.md`.
 - `Core/approval_gate.py` — the danger firewall. Reached read-only via an `importlib`
   bridge in `src/hive/core/approval.py` (re-exports `gate`, `PROTECTED_PATHS`,
   `DANGEROUS_TOOLS`). **Never edited/moved.**
+- `src/hive/core/approval.py` adds a fail-closed containment layer around the
+  immutable gate: shell commands must match the small read-only allowlist, shell
+  metacharacters and malformed/missing commands require approval, and protected
+  paths are compared case-insensitively after separator and dot-segment
+  normalization.
+- `src/hive/tools/file_safety.py` anchors repository-sensitive paths to the
+  installed package's repository root rather than the process CWD. It blocks
+  sensitive repository paths for both read and write operations, keeps the
+  credential/system denylist case-insensitive, and treats symlinks leaving that
+  root as unsafe.
 - Both are PROTECTED: `core/self_mod.py::_touches_protected` refuses any change touching
   them; the tool executor routes dangerous calls through the gate; Hive never merges to
   `main` (humans do).
