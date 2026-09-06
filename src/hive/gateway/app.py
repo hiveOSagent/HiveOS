@@ -59,11 +59,17 @@ def _sender_allowed(event: MessageEvent, *, allowed_users: frozenset[str],
     return user_id in allowed_users or chat_id in allowed_chats
 
 
-def _reject_unallowed_sender(event: MessageEvent) -> dict[str, object]:
+def _reject_unallowed_sender(
+    event: MessageEvent, *, reason: str = "sender_not_allowed"
+) -> dict[str, object]:
     """Acknowledge untrusted webhook input without placing it in a model turn."""
     event.trust = "untrusted"
-    log.warning("%s webhook: refused non-allowlisted sender trust=untrusted", event.platform)
-    return {"ok": True, "handled": False, "reason": "sender_not_allowed"}
+    log.warning(
+        "%s webhook: refused sender reason=%s trust=untrusted",
+        event.platform,
+        reason,
+    )
+    return {"ok": True, "handled": False, "reason": reason}
 
 
 def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastAPI:
@@ -1684,6 +1690,13 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             event = email_channel.parse_update({"raw_bytes": raw})
             if event is None:
                 return {"ok": True, "handled": False}
+            verified_sender = request.headers.get("X-Verified-Sender", "").strip()
+            if (
+                not event.raw.get("sender_verified", False)
+                or not verified_sender
+                or verified_sender.casefold() != event.user_id.casefold()
+            ):
+                return _reject_unallowed_sender(event, reason="sender_not_verified")
             if not _sender_allowed(
                 event,
                 allowed_users=hive.config.email_allowed_senders,

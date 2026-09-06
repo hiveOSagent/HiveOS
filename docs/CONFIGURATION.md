@@ -206,7 +206,13 @@ from a sender outside the list is acknowledged without reaching `hive.ask()`.
 |---|---|---|
 | `HIVE_SLACK_ALLOWED_USER_IDS` | `HIVE_SLACK_SIGNING_SECRET` is set | Comma-separated Slack user IDs from the signed event payload. |
 | `HIVE_DISCORD_ALLOWED_USER_IDS` | `HIVE_DISCORD_PUBLIC_KEY` is set | Comma-separated Discord user IDs from the verified interaction. |
-| `HIVE_EMAIL_ALLOWED_SENDERS` | `HIVE_SMTP_WEBHOOK_SECRET` is set | Comma-separated sender email addresses; compared case-insensitively. |
+| `HIVE_EMAIL_ALLOWED_SENDERS` | `HIVE_SMTP_WEBHOOK_SECRET` is set | Comma-separated sender email addresses; compared case-insensitively. The authenticated ingress must strip inbound `Authentication-Results`, add its own aligned `dmarc=pass` result, and send `X-Verified-Sender` matching `From`. |
+
+The email webhook secret authenticates the configured ingress, not the RFC822
+`From` field. The ingress therefore owns sender verification: it must remove
+untrusted authentication headers before forwarding the message and must only
+set `X-Verified-Sender` after provider-verified DMARC alignment. Hive rejects
+email before `hive.ask()` unless both assertions are present and consistent.
 
 ---
 

@@ -802,9 +802,9 @@ class HiveOS:
               router: ModelRouter | None = None) -> "HiveOS":
         """Construct + wire every subsystem. Inject `router` to bypass the network in tests."""
         cfg = config or HiveConfig.from_env()
-        if cfg.production_mode and cfg.secret == "change_me":
+        if cfg.production_mode and (not cfg.secret.strip() or cfg.secret == "change_me"):
             raise RuntimeError(
-                "HIVE_PRODUCTION=true requires HIVE_SECRET to be changed from 'change_me'"
+                "HIVE_PRODUCTION=true requires a non-empty HIVE_SECRET different from 'change_me'"
             )
         if cfg.autonomy_enabled and not cfg.approver_key:
             raise RuntimeError(

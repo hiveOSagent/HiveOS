@@ -516,6 +516,18 @@ def test_email_parse_uses_from_and_message_id():
     assert evt.user_id == "bob@x.com"
     assert evt.message_id == "<m1@x.com>"
     assert evt.platform == "email"
+    assert evt.raw["sender_verified"] is False
+
+
+def test_email_parse_marks_mta_verified_dmarc_sender():
+    raw = (
+        b"From: bob@x.com\r\n"
+        b"Authentication-Results: mx.example; dmarc=pass header.from=x.com\r\n"
+        b"Subject: subj\r\n\r\nbody"
+    )
+    evt = EmailChannel().parse_update({"raw_bytes": raw})
+    assert evt is not None
+    assert evt.raw["sender_verified"] is True
 
 
 def test_email_parse_returns_none_for_missing_raw_bytes():
@@ -647,7 +659,7 @@ def test_email_webhook_processes_message_with_fake_channel(tmp_path, monkeypatch
         def parse_update(self, raw):
             return MessageEvent(text="hello hive", chat_id="alice@x.com",
                                 user_id="alice@x.com", message_id="<1@x.com>",
-                                platform="email", raw=raw)
+                                platform="email", raw={"sender_verified": True})
 
         async def send(self, message):
             self.sent.append(message)
@@ -661,7 +673,10 @@ def test_email_webhook_processes_message_with_fake_channel(tmp_path, monkeypatch
     monkeypatch.setattr(email_mod, "EmailChannel", lambda **kw: fake)
     with TestClient(create_app(hive)) as c:
         r = c.post("/email/webhook", content=b"raw",
-                   headers={"X-Webhook-Secret": "secret"})
+                   headers={
+                       "X-Webhook-Secret": "secret",
+                       "X-Verified-Sender": "alice@x.com",
+                   })
         assert r.status_code == 200
         assert fake.sent and fake.sent[0].text == "ok"
 
@@ -733,10 +748,32 @@ def test_email_webhook_refuses_unallowed_sender_before_model_turn(tmp_path, monk
     ask = AsyncMock()
     monkeypatch.setattr(type(hive), "ask", ask)
     with TestClient(create_app(hive)) as client:
-        response = client.post("/email/webhook", content=b"From: intruder@example.com\n\nhi", headers={
-            "X-Webhook-Secret": "secret",
-        })
+        response = client.post(
+            "/email/webhook",
+            content=b"Authentication-Results: dmarc=pass\nFrom: intruder@example.com\n\nhi",
+            headers={
+                "X-Webhook-Secret": "secret",
+                "X-Verified-Sender": "intruder@example.com",
+            },
+        )
     assert response.json() == {"ok": True, "handled": False, "reason": "sender_not_allowed"}
+    hive.ask.assert_not_awaited()
+
+
+def test_email_webhook_requires_verified_sender_header(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    hive = _build_hive(tmp_path, smtp_webhook_secret="secret",
+                       email_allowed_senders=frozenset({"alice@example.com"}))
+    ask = AsyncMock()
+    monkeypatch.setattr(type(hive), "ask", ask)
+    with TestClient(create_app(hive)) as client:
+        response = client.post(
+            "/email/webhook",
+            content=b"From: alice@example.com\nAuthentication-Results: dmarc=pass\n\nhi",
+            headers={"X-Webhook-Secret": "secret"},
+        )
+    assert response.json() == {"ok": True, "handled": False, "reason": "sender_not_verified"}
     hive.ask.assert_not_awaited()
 
 

@@ -360,8 +360,19 @@ def test_hiveos_build_rejects_default_secret_in_explicit_production_mode(tmp_pat
     from hive.runtime import HiveOS
 
     monkeypatch.setenv("HIVE_PRODUCTION", "true")
+    monkeypatch.setenv("HIVE_SECRET", "change_me")
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     with pytest.raises(RuntimeError, match="HIVE_PRODUCTION=true"):
+        HiveOS.build(cfg, router=object())
+
+
+def test_hiveos_build_rejects_empty_secret_in_explicit_production_mode(tmp_path, monkeypatch):
+    from hive.runtime import HiveOS
+
+    monkeypatch.setenv("HIVE_PRODUCTION", "true")
+    monkeypatch.setenv("HIVE_SECRET", "")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    with pytest.raises(RuntimeError, match="non-empty HIVE_SECRET"):
         HiveOS.build(cfg, router=object())
 
 

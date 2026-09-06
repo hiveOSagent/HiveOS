@@ -154,6 +154,12 @@ def test_token_ok_empty_token():
     assert token_ok("", "abc123") is False
 
 
+def test_token_ok_empty_secret_fails_closed():
+    from hive.gateway.auth import token_ok
+    assert token_ok("", "") is False
+    assert token_ok("anything", "") is False
+
+
 def test_make_auth_dependency_blocks_missing_header(tmp_path):
     with _client(_hive(tmp_path)) as c:
         assert c.get("/budget").status_code == 401
@@ -167,6 +173,15 @@ def test_make_auth_dependency_blocks_wrong_token(tmp_path):
 def test_make_auth_dependency_allows_correct_token(tmp_path):
     with _client(_hive(tmp_path)) as c:
         assert c.get("/budget", headers=_TOKEN).status_code == 200
+
+
+def test_empty_gateway_secret_rejects_empty_header(tmp_path):
+    import dataclasses
+
+    hive = _hive(tmp_path)
+    hive.config = dataclasses.replace(hive.config, secret="")
+    with _client(hive) as c:
+        assert c.get("/budget", headers={"X-Hive-Token": ""}).status_code == 401
 
 
 # ---------------------------------------------------------------------------
