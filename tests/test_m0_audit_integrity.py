@@ -157,6 +157,21 @@ def test_gateway_release_does_not_close_an_injected_runtime(tmp_path):
         assert second.get("/health").status_code == 200
 
 
+def test_gateway_startup_failure_releases_its_lifespan(tmp_path, monkeypatch):
+    hive = _hive(tmp_path)
+
+    async def fail_to_load_mcp(_self) -> None:
+        raise RuntimeError("MCP startup failed")
+
+    monkeypatch.setattr(HiveOS, "load_mcp_servers", fail_to_load_mcp)
+    with pytest.raises(RuntimeError, match="MCP startup failed"):
+        with TestClient(create_app(hive)):
+            pass
+
+    hive.acquire_gateway_lifespan()
+    assert hive.release_gateway_lifespan() is True
+
+
 def test_runtime_close_is_idempotent(tmp_path):
     hive = _hive(tmp_path)
     asyncio.run(hive.aclose())

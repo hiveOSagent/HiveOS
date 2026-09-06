@@ -98,9 +98,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         hive.acquire_gateway_lifespan()
-        await hive.load_mcp_servers()   # connect configured MCP servers (best-effort, A2)
-        log.info("HiveOS gateway online")
         try:
+            await hive.load_mcp_servers()   # connect configured MCP servers (best-effort, A2)
+            log.info("HiveOS gateway online")
             yield
         finally:
             if (
