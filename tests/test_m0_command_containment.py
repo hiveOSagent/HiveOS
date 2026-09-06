@@ -91,8 +91,20 @@ def test_file_safety_prefix_boundaries_do_not_block_unrelated_paths(path, operat
     assert check_path(str(path), operation=operation) is None
 
 
-def test_mutating_git_branch_command_is_gated_but_status_remains_safe():
-    assert approval.gate.is_dangerous("shell", {"cmd": "git branch review-fix"}) is True
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git branch review-fix",
+        "git diff --output=Config/SOUL.md",
+        "git show HEAD:.github/workflows/ci.yml",
+        "git log -p",
+    ],
+)
+def test_content_bearing_or_mutating_git_commands_are_gated(command):
+    assert approval.gate.is_dangerous("shell", {"cmd": command}) is True
+
+
+def test_non_content_git_status_remains_safe():
     assert approval.gate.is_dangerous("shell", {"cmd": "git status"}) is False
 
 

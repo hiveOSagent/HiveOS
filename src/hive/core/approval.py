@@ -44,7 +44,7 @@ _SAFE_SHELL_COMMANDS = frozenset({
     "cd", "date", "dir", "echo", "hostname", "ls", "printf", "pwd",
     "type", "ver", "where", "which", "whoami",
 })
-_SAFE_GIT_SUBCOMMANDS = frozenset({"describe", "diff", "log", "show", "status"})
+_SAFE_GIT_SUBCOMMANDS = frozenset({"describe", "status"})
 _SHELL_META = re.compile(r"[\r\n;&|<>\x60$()]|\u0000")
 _PATH_ARGUMENTS = ("path", "file", "filename", "destination")
 
