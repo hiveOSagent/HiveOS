@@ -119,6 +119,14 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   protected. Cross-instance writers serialize through SQLite immediate transactions.
   The chain remains tamper-evident local storage rather than an external immutable
   anchor against unrestricted database writes.
+- **M0 self-mod risk containment (issue #147):** risk tiers now include a normalized
+  path-based `REVIEW` floor for core/tools/gateway, Git/workflow, and project
+  configuration paths. `EDIT_DOCS` rejects non-document targets, dangerous-pattern
+  checks run on every edit payload, and `SelfModifier` verifies callback-reported
+  files against the actual Git diff plus untracked files before testing or pushing.
+  Focused verification at commit `e33f411` recorded **467 passed and 2 existing
+  Windows `_default_run` smoke failures** because the environment has no Unix
+  `true` command.
 - **M0 command/file containment (issue #122):** the approval bridge classifies shell
   commands fail-closed, allowing only a small read-only command set and routing
   unknown, malformed, chained, or destructive forms to approval. Protected paths are

@@ -258,6 +258,14 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   tamper-evident local storage, not a substitute for an external immutable anchor
   against an attacker with unrestricted SQLite write access. SQLite files receive
   restrictive owner permissions where the host filesystem supports them.
+- **M0 self-mod risk containment (issue #147):** risk tiers are assigned from both
+  the typed operation and normalized target paths. Source, gateway, tool, Git,
+  workflow, and project configuration paths have a minimum `REVIEW` floor, while
+  `EDIT_DOCS` rejects non-document targets. Dangerous-pattern checks scan every
+  edit payload; syntax checks are limited to complete Python files. Before tests,
+  `SelfModifier` cross-checks the callback's claimed paths against tracked and
+  untracked files reported by Git and refuses mismatches, including hidden changes
+  to protected files.
 - **M0 inbound sender boundary (issue #150):** every enabled inbound channel has two
   checks before a model turn: platform-request authentication and an explicit owner
   allowlist. Telegram requires its Bot API webhook secret plus an allowed user or chat;
@@ -314,6 +322,9 @@ and unrelated Codex/audit/SOUL checks); they are not used to claim a full-suite 
 The M0 audit-integrity slice adds one-time chain migration, restart tamper detection,
 and cross-instance SQLite writer serialization. The chain remains tamper-evident local
 storage, not an external immutable audit anchor.
+For M0 #147 at commit `e33f411`, the focused self-modification/risk suite recorded
+**467 passed and 2 failed** on Windows; both failures are existing `_default_run`
+smokes that invoke the unavailable Unix `true` command and are unrelated to this slice.
 Live smokes remain opt-in via `HIVE_LIVE_TEST=1`.
 architecture DAG test (`tests/test_architecture.py`) enforces the `core`-is-leaf invariant
 via static AST scan; CI (`.github/workflows/ci.yml`) runs `ruff check` + compile check +

@@ -227,6 +227,11 @@ def test_audit_log_explicit_prune(tmp_path):
 
 def _fake_runner(script):
     async def run(cmd, cwd=None):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if "git diff --name-only" in cmd_str:
+            return 0, "src/hive/llm/router.py\n"
+        if "git ls-files --others" in cmd_str:
+            return 0, ""
         for key, rc, out in script:
             if key in cmd:
                 return rc, out
@@ -265,7 +270,7 @@ def test_self_mod_test_failure_stays_on_last_good():
                            ("pytest", 1, "FAILED test"), ("worktree remove", 0, "")])
 
     async def apply_fn(wt):
-        return ["src/hive/x.py"]
+        return ["src/hive/llm/router.py"]
 
     sm = SelfModifier(run=runner, test_cmd="python -m pytest -q")
     res = asyncio.run(sm.propose("t", "d", apply_fn))

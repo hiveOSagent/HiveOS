@@ -133,6 +133,10 @@ def test_integration_auto_edit_with_real_selfmodifier(tmp_path):
         calls.append(cmd_str)
         if cmd_str.startswith("git rev-parse"):
             return 0, "deadbeef\n"
+        if cmd_str.startswith("git diff --name-only"):
+            return 0, "src/hive/x.py\n"
+        if cmd_str.startswith("git ls-files --others"):
+            return 0, ""
         return 0, "ok"  # worktree add, test, add, commit, push, cleanup all succeed
 
     async def apply_fn(_wt):

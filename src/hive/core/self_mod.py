@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import posixpath
 import subprocess
 import time
 from pathlib import Path
@@ -103,6 +104,34 @@ def _touches_protected(changed: list[str]) -> bool:
         if basename in _PROTECTED_NAMES:
             return True
     return False
+
+
+async def _actual_changed_files(run: Runner, worktree: str) -> tuple[int, list[str], str]:
+    """Read tracked and untracked changes from the candidate worktree.
+
+    The callback's returned file list is advisory. The Git state is the source
+    of truth before tests, commit, and push are allowed to proceed.
+    """
+    rc, diff_out = await run(["git", "diff", "--name-only", "--no-renames", "HEAD", "--"], worktree)
+    if rc != 0:
+        return rc, [], diff_out
+    rc, untracked_out = await run(
+        ["git", "ls-files", "--others", "--exclude-standard"], worktree
+    )
+    if rc != 0:
+        return rc, [], untracked_out
+    files = sorted({_normalize_changed_path(line) for line in
+                    (diff_out + "\n" + untracked_out).splitlines() if line.strip()})
+    files = [path for path in files if path]
+    return 0, files, ""
+
+
+def _normalize_changed_path(path: str) -> str:
+    """Normalize Git/callback paths to one repo-relative comparison form."""
+    normalized = posixpath.normpath(str(path).replace("\\", "/"))
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
 
 
 _MAX_HISTORY = 50   # keep at most this many proposal records in memory
@@ -289,12 +318,32 @@ class SelfModifier:
         if rc != 0:
             return {"ok": False, "stage": "worktree", "log": out}
         try:
-            changed = await apply_fn(wt)
-            if _touches_protected(changed):
+            reported_changed = await apply_fn(wt)
+            if _touches_protected(reported_changed):
                 log.warning("self_mod BLOCKED: proposed edit touches protected files: %s",
-                            [p for p in changed if _touches_protected([p])])
+                            [p for p in reported_changed if _touches_protected([p])])
                 return {"ok": False, "stage": "protected",
                         "msg": "change touches SOUL.md or approval gate — human-only"}
+
+            rc, changed, change_error = await _actual_changed_files(self._run, wt)
+            if rc != 0:
+                return {"ok": False, "stage": "changed_files",
+                        "msg": "unable to verify candidate worktree changes",
+                        "log": change_error[-1000:]}
+            reported_set = {_normalize_changed_path(path) for path in reported_changed}
+            actual_set = {_normalize_changed_path(path) for path in changed}
+            if reported_set != actual_set:
+                log.warning("self_mod BLOCKED: apply_fn file list differs from Git diff; "
+                            "reported=%s actual=%s", sorted(reported_set), sorted(actual_set))
+                if _touches_protected(changed):
+                    return {"ok": False, "stage": "protected",
+                            "msg": "actual change touches SOUL.md or approval gate — human-only"}
+                return {"ok": False, "stage": "changed_files",
+                        "msg": "apply_fn file list does not match actual Git changes",
+                        "reported": sorted(reported_set), "actual": sorted(actual_set)}
+            if _touches_protected(changed):
+                return {"ok": False, "stage": "protected",
+                        "msg": "actual change touches SOUL.md or approval gate — human-only"}
 
             rc, test_out = await self._run(self._test_cmd, wt)
             if rc != 0:

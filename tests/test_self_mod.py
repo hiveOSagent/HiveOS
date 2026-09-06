@@ -18,6 +18,10 @@ def _runner(script=None, *, push_rc=0):
         calls.append(cmd_str)
         if cmd_str.startswith("git rev-parse"):
             return 0, "deadbeef\n"
+        if cmd_str.startswith("git diff --name-only"):
+            return 0, "src/hive/llm/pricing.py\n"
+        if cmd_str.startswith("git ls-files --others"):
+            return 0, ""
         if cmd_str.startswith("git push"):
             return push_rc, "push output"
         return 0, "ok"
@@ -123,6 +127,10 @@ def test_empty_apply_fn_returns_no_changes():
             cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
             if cmd_str.startswith("git rev-parse"):
                 return 0, "deadbeef\n"
+            if cmd_str.startswith("git diff --name-only"):
+                return 0, ""
+            if cmd_str.startswith("git ls-files --others"):
+                return 0, ""
             if cmd_str.startswith("git status --porcelain"):
                 return 0, ""  # empty status = nothing to commit
             if cmd_str.startswith("git push"):
@@ -147,6 +155,10 @@ def test_title_newlines_sanitized():
             cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
             if cmd_str.startswith("git rev-parse"):
                 return 0, "abc\n"
+            if cmd_str.startswith("git diff --name-only"):
+                return 0, "src/file.py\n"
+            if cmd_str.startswith("git ls-files --others"):
+                return 0, ""
             if "commit" in cmd_str and isinstance(cmd, list):
                 # The title is the last list element after -m.
                 m_idx = cmd.index("-m") if "-m" in cmd else -1
@@ -627,9 +639,22 @@ async def _apply_multiple(_wt):
     return ["src/hive/llm/pricing.py", "src/hive/core/types.py", "tests/test_new.py"]
 
 
+def _runner_multiple():
+    async def run(cmd, cwd=None):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if "git diff --name-only" in cmd_str:
+            return 0, "src/hive/llm/pricing.py\nsrc/hive/core/types.py\n"
+        if "git ls-files --others" in cmd_str:
+            return 0, "tests/test_new.py\n"
+        if "git rev-parse" in cmd_str:
+            return 0, "deadbeef\n"
+        return 0, "ok"
+    return run
+
+
 def test_wave4i_proposal_with_multiple_files_is_accepted():
     """A proposal returning multiple non-protected files is accepted (dry_run)."""
-    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner_multiple())
     out = asyncio.run(mod.propose("multi-file patch", "desc", _apply_multiple, dry_run=True))
     assert out["ok"] is True
     assert len(out.get("changed", [])) == 3
@@ -856,6 +881,10 @@ def test_propose_logs_warning_on_worktree_cleanup_failure(caplog):
             cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
             if cmd_str.startswith("git rev-parse"):
                 return 0, "deadbeef\n"
+            if cmd_str.startswith("git diff --name-only"):
+                return 0, "src/hive/llm/pricing.py\n"
+            if cmd_str.startswith("git ls-files --others"):
+                return 0, ""
             if cmd_str.startswith("git worktree remove"):
                 return 1, "permission denied"
             return 0, "ok"
@@ -878,6 +907,10 @@ def test_propose_logs_warning_on_branch_cleanup_failure(caplog):
             cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
             if cmd_str.startswith("git rev-parse"):
                 return 0, "deadbeef\n"
+            if cmd_str.startswith("git diff --name-only"):
+                return 0, "src/hive/llm/sanitize.py\n"
+            if cmd_str.startswith("git ls-files --others"):
+                return 0, ""
             if cmd_str.startswith("git branch -D"):
                 return 1, "branch not found"
             return 0, "ok"
@@ -933,7 +966,11 @@ def test_propose_reports_test_failure():
             cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
             if cmd_str.startswith("git rev-parse"):
                 return 0, "deadbeef\n"
-            # The test command is `python -m pytest -q` by default; the runner sees it raw.
+            if cmd_str.startswith("git diff --name-only"):
+                return 0, "src/hive/llm/pricing.py\n"
+            if cmd_str.startswith("git ls-files --others"):
+                return 0, ""
+                # The test command is `python -m pytest -q` by default; the runner sees it raw.
             if "pytest" in cmd_str:
                 return 1, "FAILED test_x.py::test_y - assert 1 == 2\n" * 50
             return 0, "ok"

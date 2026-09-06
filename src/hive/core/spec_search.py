@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import enum
 import logging
+import posixpath
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import Awaitable, Callable, Protocol
+from typing import Awaitable, Callable, Iterable, Protocol
 
 from hive.core import approval
 from hive.core.self_mod import ApplyFn, SelfModifier
@@ -87,8 +88,66 @@ _TIER_TABLE: dict[EditOp, RiskTier] = {
 assert set(_TIER_TABLE) == set(EditOp), "every EditOp needs an explicit risk tier"
 
 
-def assign_tier(op: EditOp) -> RiskTier:
-    return _TIER_TABLE[op]
+_PATH_REVIEW_PREFIXES = (
+    "src/hive/core",
+    "src/hive/tools",
+    "src/hive/gateway",
+    "core",
+    ".git",
+    ".github",
+)
+_PATH_REVIEW_EXACT = {"pyproject.toml"}
+
+
+def _normalize_repo_path(path: str) -> str:
+    """Normalize a model-supplied repository path for policy comparisons."""
+    normalized = str(path).replace("\\", "/").strip()
+    normalized = posixpath.normpath(normalized)
+    return normalized.lower()
+
+
+def path_requires_review(path: str) -> bool:
+    """Return whether a path has a minimum REVIEW risk floor.
+
+    This is intentionally path-based: the model-selected operation is not
+    trusted to describe the blast radius of the file content it targets.
+    """
+    normalized = _normalize_repo_path(path)
+    return normalized in _PATH_REVIEW_EXACT or any(
+        normalized == prefix or normalized.startswith(prefix + "/")
+        for prefix in _PATH_REVIEW_PREFIXES
+    )
+
+
+def validate_edit_target(op: EditOp, path: str) -> str | None:
+    """Validate the operation/path pairing supplied by the diagnoser.
+
+    Empty paths remain valid for programmatic edits that provide their own
+    apply callback. JSON edits, however, must provide a path for EDIT_DOCS so
+    that the operation cannot silently become a generic source-file patch.
+    """
+    if op is EditOp.EDIT_DOCS:
+        if not path:
+            return "EDIT_DOCS requires a target path"
+        normalized = _normalize_repo_path(path)
+        document = (
+            normalized.startswith("docs/")
+            or normalized.startswith("doc/")
+            or normalized.startswith("readme")
+            or normalized.startswith("changelog")
+            or normalized.endswith((".md", ".mdx", ".rst", ".adoc", ".txt"))
+        )
+        if not document:
+            return f"EDIT_DOCS target is not documentation: {path}"
+    return None
+
+
+def assign_tier(op: EditOp, target_files: Iterable[str] | None = None) -> RiskTier:
+    """Return the canonical op tier, raised to REVIEW for sensitive paths."""
+    tier = _TIER_TABLE[op]
+    if tier is RiskTier.AUTO and any(path_requires_review(path) for path in (target_files or ())):
+        return RiskTier.REVIEW
+    return tier
 
 
 @dataclass(slots=True)
@@ -106,7 +165,9 @@ class Edit:
     SelfModifier's own _touches_protected is the final defence.
 
     `code` is the OPTIONAL textual payload (Python body / patch text). When
-    provided, python_syntax and dangerous_patterns checks also fire.
+    provided, dangerous_patterns checks fire. Python syntax is checked only
+    when `code_is_complete_file` is true; replacement fragments are not whole
+    Python files and must not be parsed as such.
     """
     op: EditOp
     summary: str
@@ -116,6 +177,7 @@ class Edit:
     risk_tier: RiskTier = RiskTier.MANUAL
     target_files: list[str] = field(default_factory=list)
     code: str | None = None
+    code_is_complete_file: bool = True
 
 
 @dataclass(slots=True)
@@ -151,7 +213,7 @@ def tiered(edits: list[Edit]) -> list[Edit]:
     never escalate its own change to a lower-friction tier."""
     out: list[Edit] = []
     for e in edits:
-        correct = assign_tier(e.op)
+        correct = assign_tier(e.op, e.target_files)
         if e.risk_tier is not correct:
             log.info("edit %s: tier %s -> %s (op=%s)", e.id, e.risk_tier.value,
                      correct.value, e.op.value)
