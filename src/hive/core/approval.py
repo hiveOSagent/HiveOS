@@ -44,7 +44,7 @@ _SAFE_SHELL_COMMANDS = frozenset({
     "cd", "date", "dir", "echo", "hostname", "ls", "printf", "pwd",
     "type", "ver", "where", "which", "whoami",
 })
-_SAFE_GIT_SUBCOMMANDS = frozenset({"branch", "describe", "diff", "log", "show", "status"})
+_SAFE_GIT_SUBCOMMANDS = frozenset({"describe", "diff", "log", "show", "status"})
 _SHELL_META = re.compile(r"[\r\n;&|<>\x60$()]|\u0000")
 _PATH_ARGUMENTS = ("path", "file", "filename", "destination")
 
@@ -89,8 +89,7 @@ def _is_safe_shell_command(command: object) -> bool:
     if executable in _SAFE_SHELL_COMMANDS:
         return True
     if executable == "git":
-        # Only read-only inspection subcommands are allowlisted. In
-        # particular, git branch -D must not inherit the branch allowance.
+        # Only read-only inspection subcommands are allowlisted.
         subcommand = next((token.casefold() for token in tokens[1:]
                            if not token.startswith("-")), "")
         if subcommand not in _SAFE_GIT_SUBCOMMANDS:

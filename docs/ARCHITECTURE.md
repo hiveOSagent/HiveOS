@@ -234,6 +234,11 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   environments. Autonomous self-modification additionally requires `HIVE_SANDBOX_IMAGE`;
   candidate test commands run through Docker with no network and only the candidate worktree
   mounted. Supervised self-mod remains available without a sandbox image.
+- **M0 command/file containment (issue #122):** the file safety boundary denies
+  reads and writes anywhere below the repository's .git/ and .github/workflows/
+  trees with normalized, path-boundary-aware matching. Exact protected files remain
+  covered separately, and Git branch creation is approval-bound rather than
+  allowlisted as an inspection command.
 - **M0 durable safety state (issue #123):** the approval enhancement wrapper persists
   pending approval payloads in the runtime SQLite database. Startup rehydrates only
   non-expired requests, and atomic consumption prevents concurrent approver requests

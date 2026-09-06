@@ -16,9 +16,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 _REPO_SENSITIVE_RELATIVE = frozenset({
     "config/soul.md",
     "core/approval_gate.py",
-    ".git/config",
     "pyproject.toml",
-    ".github/workflows/ci.yml",
+})
+_REPO_SENSITIVE_PREFIXES = frozenset({
+    ".git",
+    ".github/workflows",
 })
 
 
@@ -42,14 +44,27 @@ def _real_key(path: str | os.PathLike[str]) -> str:
     return _path_key(_real(os.fspath(path)))
 
 
+def _sensitive_repo_relative(path_key: str) -> bool:
+    """Match exact files and protected directory trees at path boundaries."""
+    return (
+        path_key in _REPO_SENSITIVE_RELATIVE
+        or any(
+            path_key == prefix or path_key.startswith(prefix + "/")
+            for prefix in _REPO_SENSITIVE_PREFIXES
+        )
+    )
+
+
 def _repo_sensitive(path: str | os.PathLike[str]) -> bool:
-    raw_key = _path_key(path).lstrip("./")
-    if raw_key in _REPO_SENSITIVE_RELATIVE:
+    raw_key = _path_key(path)
+    relative_key = raw_key[2:] if raw_key.startswith("./") else raw_key
+    if _sensitive_repo_relative(relative_key):
         return True
     repo_key = _path_key(REPO_ROOT)
-    return _real_key(path) in {
-        f"{repo_key}/{relative}" for relative in _REPO_SENSITIVE_RELATIVE
-    }
+    real_key = _real_key(path)
+    if not real_key.startswith(repo_key + "/"):
+        return False
+    return _sensitive_repo_relative(real_key.removeprefix(repo_key + "/"))
 
 
 def _add_path_aliases(result: set[str], path: str | os.PathLike[str]) -> None:

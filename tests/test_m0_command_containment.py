@@ -65,6 +65,37 @@ def test_file_safety_blocks_sensitive_repo_paths_from_any_cwd(tmp_path, monkeypa
     assert check_path(str(path), operation="read") is not None
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        REPO_ROOT / ".git" / "hooks" / "pre-commit",
+        REPO_ROOT / ".github" / "workflows" / "release" / "publish.yml",
+    ],
+)
+@pytest.mark.parametrize("operation", ["read", "write"])
+def test_file_safety_blocks_sensitive_repo_directory_descendants(tmp_path, monkeypatch, path, operation):
+    monkeypatch.chdir(tmp_path)
+
+    assert check_path(str(path), operation=operation) is not None
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        REPO_ROOT / ".gitignore",
+        REPO_ROOT / ".github" / "workflows-backup" / "ci.yml",
+    ],
+)
+@pytest.mark.parametrize("operation", ["read", "write"])
+def test_file_safety_prefix_boundaries_do_not_block_unrelated_paths(path, operation):
+    assert check_path(str(path), operation=operation) is None
+
+
+def test_mutating_git_branch_command_is_gated_but_status_remains_safe():
+    assert approval.gate.is_dangerous("shell", {"cmd": "git branch review-fix"}) is True
+    assert approval.gate.is_dangerous("shell", {"cmd": "git status"}) is False
+
+
 class _Shell(BaseTool):
     spec = ToolSpec(
         name="shell",
