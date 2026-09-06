@@ -112,6 +112,11 @@ Consequence: cross-layer needs are **injected** (e.g. `memory.keeper` takes a
 frozen `HiveConfig`, then returns a `HiveOS` dataclass holding them. Inject `router`
 to run fully offline (all tests do). Wiring highlights:
 - EventBus created per build (no cross-talk); budgeter, telemetry, traces subscribe.
+  `ObservabilityLedger` owns append-only `telemetry` and `selfmod_history` tables
+  in the existing state database. At startup it hydrates the telemetry projection
+  and passes a local-day aggregate to the core budgeter without reversing the
+  dependency DAG. The old JSON budget history remains the compatibility source
+  for completed-day forecasting.
 - Router = `ModelRouter(adapter=MiniMaxAdapter, credential_pool, budget=budgeter.gate)`.
 - Memory = `build_mnemosyne_provider(host_llm=…)` **or** `LocalMemoryProvider` fallback;
   when Mnemosyne is active its consolidation routes through HiveOS via `HostLLMBridge`
@@ -161,7 +166,10 @@ never call observability directly. Event types: `INFERENCE_{START,END}`,
 `TOOL_CALL_{START,END}`, `MEMORY_{STORE,RETRIEVE}`, `AGENT_{TURN,TICK}_{START,END}`,
 `APPROVAL_{REQUESTED,RESOLVED}`, `TELEMETRY_RECORD`, `BUDGET_BLOCK`, `SELFMOD_{START,END}`.
 `INFERENCE_END` carries `{model, input_tokens, output_tokens, cost_usd}` → budgeter
-(cost accumulator) + telemetry.
+(cost accumulator) + telemetry. Telemetry appends the finalized event to the
+durable ledger before updating its in-process projection. Self-modification
+terminal outcomes are also appended with their run id, tier, branch, PR URL,
+and outcome; the CLI exposes them through `hive selfmod-history`.
 
 ## 7. Model routing & resilience (`llm/`)
 `ModelRouter.complete(kind=EXECUTE|AUX|PLAN)`: PLAN → Codex planner (subprocess, hardened:

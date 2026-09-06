@@ -9,14 +9,19 @@ Depends on hive.core only.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from hive.core.events import EventBus, EventType
+from hive.observability.persistence import ObservabilityLedger
+
+log = logging.getLogger("hive.telemetry")
 
 
 @dataclass(slots=True)
 class Telemetry:
+    ledger: ObservabilityLedger | None = field(default=None, repr=False)
     inference_calls: int = 0
     output_tokens: int = 0
     input_tokens: int = 0
@@ -30,6 +35,18 @@ class Telemetry:
     selfmod_succeeded: int = 0
     selfmod_failed: int = 0
 
+    def __post_init__(self) -> None:
+        if self.ledger is None:
+            return
+        totals = self.ledger.telemetry_totals()
+        self.inference_calls = int(totals["inference_calls"])
+        self.input_tokens = int(totals["input_tokens"])
+        self.output_tokens = int(totals["output_tokens"])
+        self.cost_usd = float(totals["cost_usd"])
+        self.by_model = dict(totals["by_model"])
+        self.cost_by_model = dict(totals["cost_by_model"])
+        self.tokens_by_model = dict(totals["tokens_by_model"])
+
     def attach(self, bus: EventBus) -> "Telemetry":
         bus.subscribe(EventType.INFERENCE_END, self._on_inference)
         bus.subscribe(EventType.TOOL_CALL_END, self._on_tool)
@@ -38,6 +55,11 @@ class Telemetry:
 
     def _on_inference(self, event: Any) -> None:
         data = _data(event)
+        if self.ledger is not None:
+            try:
+                self.ledger.record_inference(data)
+            except Exception as exc:  # noqa: BLE001 - telemetry cannot break inference delivery
+                log.warning("telemetry persistence failed: %s", exc)
         self.inference_calls += 1
         self.output_tokens += int(data.get("output_tokens", 0) or 0)
         self.input_tokens += int(data.get("input_tokens", 0) or 0)

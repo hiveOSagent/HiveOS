@@ -49,7 +49,7 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 | gateway | app (FastAPI), protocol, auth, channels/{base,telegram,slack,discord,email} | BUILT+WIRED |
 | autonomy | heartbeat, cron, tasks, commitments | BUILT; P0 safety-gated by default |
 | surfaces | cli, voice | BUILT+WIRED (voice needs audio host) |
-| observability | telemetry, traces, audit | BUILT+WIRED |
+| observability | telemetry, persistence, traces, audit | BUILT+WIRED |
 | runtime | runtime.py (`HiveOS` + `HiveOS.build`) | BUILT+WIRED |
 | evals | types, dataset, runner, cli, graders/{base,exact,regex,llm_judge,tool_trace}, reporters/{console,junit_xml,html} | BUILT+WIRED (SPRINT_6 P-B; CI gate via `evals` job) |
 
@@ -57,6 +57,18 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 - **Resilience (M1):** failover taxonomy, multi-key credential pool w/ cooldowns,
   rate-limit-aware proactive cooldown, per-token cost budgeter, hardened Codex planner
   (stdin/timeout/fallback), opt-in live smokes.
+- **M1 durable telemetry substrate (issue #127):** completed inference events are
+  appended to the shared SQLite state database with run id, timestamp, model,
+  token counts, and estimated USD cost. Runtime rebuilds the telemetry projection
+  and local-day budget accumulator from that ledger after restart. Terminal self-mod
+  outcomes are persisted with tier, branch, PR URL, and outcome; `hive selfmod-history`
+  lists the durable history. The completed-day JSON budget history remains supported
+  for forecast compatibility; hard spend-cap enforcement is issue #152. Fresh local
+  evidence: focused regressions `7 passed`; affected suites passed with
+  `178 passed` (budget/forecast/resilience), `173 passed` (observability/runtime),
+  `245 passed` (CLI/gateway), and `86 passed` (self-mod; two Unix-only tests
+  deselected on Windows). Full pytest: `4316 passed, 18 failed, 18 skipped,
+  13 warnings`; the failures are pre-existing Windows/POSIX baseline gaps.
 - **Self-improvement (M2):** risk-tiered `spec_search` (AUTO/REVIEW/MANUAL, model can't
   self-escalate), Curator skill lifecycle (never-delete, pinned-exempt, backup, and — as of
   SPRINT_7 Batch H — archiving actually deregisters the learned skill from the live tool

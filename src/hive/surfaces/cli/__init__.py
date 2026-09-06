@@ -549,6 +549,28 @@ async def _approvals() -> int:
     return 0
 
 
+async def _selfmod_history(limit: int = 20) -> int:
+    """List durable self-mod proposal outcomes without performing any mutation."""
+    from hive.runtime import HiveOS
+
+    hive = HiveOS.build()
+    try:
+        records = hive.self_mod_history(limit=max(1, min(limit, 100)))
+    finally:
+        await hive.aclose()
+    print(_bold("\n  HiveOS Self-modification History\n"))
+    if not records:
+        print(_dim("  (no self-mod proposals yet)"))
+        return 0
+    for record in records:
+        outcome = _green(str(record.get("outcome", "ok"))) if record.get("ok") else _yellow(
+            str(record.get("outcome", "failed"))
+        )
+        print(f"  {outcome:<12} {record.get('tier', 'auto'):<6} "
+              f"{record.get('branch') or '-':<28} {record.get('title', '')}")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Registry population — every command, declarative.
 # ---------------------------------------------------------------------------
@@ -693,6 +715,13 @@ def _populate_registry() -> None:
         handler_name="_approvals",
         category="gateway",
     )
+    _registry_mod.REGISTRY["selfmod-history"] = _registry_mod.CommandSpec(
+        name="selfmod-history",
+        help="durable self-mod proposal history",
+        handler_name="_selfmod_history",
+        args=(("--limit", _int_or(20), "max records to show"),),
+        category="ops",
+    )
     _registry_mod.REGISTRY["learning"] = _registry_mod.CommandSpec(
         name="learning",
         help="learning loop introspection (SPRINT_6 P-F)",
@@ -731,7 +760,7 @@ _populate_registry()
 # Entry point
 # ---------------------------------------------------------------------------
 
-_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals|learning|completion]"
+_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals|selfmod-history|learning|completion]"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -780,6 +809,13 @@ def main(argv: list[str] | None = None) -> int:
         except (ValueError, TypeError):
             tail = 20
         return _logs(tail)
+    if cmd == "selfmod-history":
+        limit = getattr(parsed, "limit", 20)
+        try:
+            limit = int(limit)
+        except (ValueError, TypeError):
+            limit = 20
+        return _run_async(_selfmod_history(limit=limit))
     if cmd == "learning" and spec.name == "status":
         limit = getattr(parsed, "limit", "10")
         try:
