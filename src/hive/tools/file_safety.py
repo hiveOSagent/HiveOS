@@ -22,6 +22,17 @@ _REPO_SENSITIVE_PREFIXES = frozenset({
     ".git",
     ".github/workflows",
 })
+_HOME_SENSITIVE_RELATIVE = frozenset({
+    ".ssh/authorized_keys",
+    ".ssh/id_rsa",
+    ".ssh/id_ed25519",
+    ".ssh/config",
+    ".netrc",
+    ".pgpass",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+})
 
 
 def _real(p: str) -> str:
@@ -65,6 +76,15 @@ def _repo_sensitive(path: str | os.PathLike[str]) -> bool:
     if not real_key.startswith(repo_key + "/"):
         return False
     return _sensitive_repo_relative(real_key.removeprefix(repo_key + "/"))
+
+
+def _home_sensitive(path: str | os.PathLike[str]) -> bool:
+    """Return whether *path* names a user credential file."""
+    home_key = _path_key(Path.home())
+    path_key = _real_key(os.path.expanduser(os.fspath(path)))
+    if not path_key.startswith(home_key + "/"):
+        return False
+    return path_key.removeprefix(home_key + "/") in _HOME_SENSITIVE_RELATIVE
 
 
 def _add_path_aliases(result: set[str], path: str | os.PathLike[str]) -> None:
@@ -119,7 +139,7 @@ _DENIED_WRITE_PATH_KEYS = frozenset(_path_key(path) for path in DENIED_WRITE_PAT
 
 def is_write_denied(path: str) -> bool:
     """True if writing to `path` is forbidden."""
-    return _repo_sensitive(path) or _real_key(path) in _DENIED_WRITE_PATH_KEYS
+    return _repo_sensitive(path) or _home_sensitive(path) or _real_key(path) in _DENIED_WRITE_PATH_KEYS
 
 
 def has_traversal(path: str) -> bool:
@@ -148,11 +168,11 @@ def has_unsafe_symlink(path: str) -> bool:
 
 def check_path(path: str, *, operation: str = "write") -> str | None:
     """Return an error string if `path` is off-limits, else None."""
-    if operation == "read" and _repo_sensitive(path):
-        return f"reading {path!r} is not permitted (sensitive repository path)"
+    if has_traversal(path):
+        return f"path traversal not permitted: {path!r}"
+    if operation == "read" and (_repo_sensitive(path) or _home_sensitive(path)):
+        return f"reading {path!r} is not permitted (sensitive path)"
     if operation in ("write", "delete", "move"):
-        if has_traversal(path):
-            return f"path traversal not permitted: {path!r}"
         if is_write_denied(path):
             return f"writing to {path!r} is not permitted (sensitive path)"
         if has_unsafe_symlink(path):

@@ -220,6 +220,10 @@ class ReadFile(BaseTool):
 
     async def execute(self, **params: Any) -> ToolResult:
         path = str(params.get("path", ""))
+        from hive.tools.file_safety import check_path
+        safety_err = check_path(path, operation="read")
+        if safety_err:
+            return ToolResult(tool_name="read_file", content=safety_err, success=False)
         text = Path(path).read_text(encoding="utf-8", errors="replace")[:20_000]
         return ToolResult(tool_name="read_file", content=text)
 

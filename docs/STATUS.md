@@ -6,17 +6,17 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **M0 issues #120-#123** (out-of-band approver credential,
- mandatory autonomous self-mod sandbox, command/file containment, and durable
- approval/cooldown state, branch `codex/m0-command-containment`, 2026-09-06).
-Verification snapshot: #123-focused tests **34 passed**; affected autonomy/tools
-suites **231 passed, 2 skipped**. The prior M0 #120-#122 focused snapshot was
-**18 passed**; its broader approval/config/autonomy/sandbox suites were **290 passed**.
-The prior full `pytest -q` snapshot was **4151 passed,
-19 failed, 18 skipped, 12 warnings** on Windows (the current full run is **4194 passed,
-19 failed, 18 skipped, 13 warnings** on Windows, with the same 19 baseline/platform
-failures). The full-suite failures are documented
-platform/baseline limitations, not an M0 pass claim.
+Last reconciled after **M0 issues #120-#123 and #143** (out-of-band approver
+credential, mandatory autonomous self-mod sandbox, command/file containment,
+durable approval/cooldown state, and executable behavioral regressions, branch
+`codex/m0-behavioral-regressions-next`, 2026-09-06).
+Verification snapshot: the new #143 harness passes **11 tests**; the affected
+M0/tool/self-mod suites report **269 passed, 2 skipped, 2 known Windows baseline
+failures**. The fresh full `pytest -q` run reports **4273 passed, 18 failed,
+18 skipped, 12 warnings** on Windows. The full-suite failures are outside the
+changed files and are known platform/baseline limitations (Unix `cat`/`bash`/
+`true`/`printf`, path/CRLF formatting, and existing adapter/bridge checks); this
+is not presented as a full-suite pass claim.
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 
 UI concept branch note (2026-08-22): `gpt-ui-improvements` adds an isolated fixture-only
