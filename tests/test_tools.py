@@ -444,6 +444,20 @@ def test_check_redirect_allows_public_location():
     _check_redirect(mock_response)  # Should not raise
 
 
+def test_check_redirect_resolves_protocol_relative_location():
+    import httpx
+    from hive.tools.builtins import _check_redirect
+
+    request = httpx.Request("GET", "https://example.com/start")
+    mock_response = httpx.Response(
+        302,
+        headers={"location": "//192.168.1.1/secret"},
+        request=request,
+    )
+    with pytest.raises(ValueError, match="SSRF redirect blocked"):
+        _check_redirect(mock_response)
+
+
 @pytest.mark.parametrize(
     "url",
     [
