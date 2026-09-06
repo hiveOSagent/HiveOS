@@ -70,7 +70,9 @@ class DockerShellProvider(ShellProvider):
 
     async def run(self, cmd: str, *, timeout: float = 30.0,
                   env: dict[str, str] | None = None) -> ShellResult:
-        safe_env = _without_approver_key(env)
+        # Containers must not inherit the host environment implicitly. Only
+        # caller-provided values are forwarded, still excluding the approver key.
+        safe_env = {} if env is None else _without_approver_key(env)
         env_args = " ".join(f"-e {shlex.quote(k + '=' + v)}" for k, v in safe_env.items())
         full = (
             f"docker run --rm --network {self._network} "

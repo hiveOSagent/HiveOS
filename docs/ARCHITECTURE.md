@@ -231,7 +231,9 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   approver key is empty. Supervised mode temporarily falls back to `HIVE_SECRET` with a
   warning for backward compatibility. The approver credential is redacted from safe config
   output and removed from LocalShellProvider, DockerShellProvider, and self-mod child
-  environments. Autonomous self-modification additionally requires `HIVE_SANDBOX_IMAGE`;
+  environments. Docker shell containers do not inherit host environment variables by
+  default; only explicitly supplied non-approver values are passed. Autonomous
+  self-modification additionally requires `HIVE_SANDBOX_IMAGE`;
   candidate test commands run through Docker with no network and only the candidate worktree
   mounted. Supervised self-mod remains available without a sandbox image.
 - **M0 command/file containment (issue #122):** the file safety boundary denies

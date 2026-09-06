@@ -86,7 +86,9 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   on that route when an approver key is configured. With autonomy enabled, `HiveOS.build()`
   fails closed without the key. Supervised mode retains a warning-emitting fallback to
   `HIVE_SECRET`. The key is redacted from safe config output and removed from shell,
-  Docker, and self-mod child-process environments. Regression coverage is in
+  Docker, and self-mod child-process environments. Docker shell containers do not
+  inherit host environment variables by default; only explicitly supplied,
+  non-approver values are forwarded. Regression coverage is in
   `tests/test_m0_approver_key.py`.
 - **M0 autonomous self-mod sandbox (issue #121):** `HiveOS.build()` rejects
   `HIVE_AUTONOMOUS_SELFMOD_ENABLED=true` without `HIVE_SANDBOX_IMAGE`. With an image,

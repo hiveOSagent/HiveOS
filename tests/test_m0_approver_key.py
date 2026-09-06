@@ -159,6 +159,32 @@ def test_docker_shell_filters_approver_key_from_args_and_child(monkeypatch):
     assert "HIVE_APPROVER_KEY" not in captured["kwargs"]["env"]
 
 
+def test_docker_shell_does_not_forward_host_environment_by_default(monkeypatch):
+    captured = {}
+    monkeypatch.setenv("HIVE_APPROVER_KEY", "approver-secret")
+    monkeypatch.setenv("HIVE_TEST_HOST_MARKER", "benign-host-secret")
+
+    class _Process:
+        returncode = 0
+
+        async def communicate(self):
+            return b"ok", b""
+
+    async def fake_create_subprocess_shell(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return _Process()
+
+    monkeypatch.setattr("hive.tools.shell_provider.asyncio.create_subprocess_shell",
+                        fake_create_subprocess_shell)
+    result = asyncio.run(DockerShellProvider().run("echo ok"))
+
+    assert result.stdout == "ok"
+    assert "HIVE_APPROVER_KEY" not in captured["command"]
+    assert "HIVE_TEST_HOST_MARKER" not in captured["command"]
+    assert " -e " not in captured["command"]
+
+
 def test_self_mod_child_cannot_read_approver_key(tmp_path, monkeypatch):
     monkeypatch.setenv("HIVE_APPROVER_KEY", "approver-secret")
     code = "import os; print(os.environ.get('HIVE_APPROVER_KEY', 'MISSING'))"
