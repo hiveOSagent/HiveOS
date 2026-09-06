@@ -227,8 +227,9 @@ def test_audit_log_explicit_prune(tmp_path):
 
 def _fake_runner(script):
     async def run(cmd, cwd=None):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
         for key, rc, out in script:
-            if key in cmd:
+            if key in cmd_str:
                 return rc, out
         return 0, ""
     return run
@@ -236,6 +237,8 @@ def _fake_runner(script):
 
 def test_self_mod_dry_run_passes_without_push():
     runner = _fake_runner([("rev-parse", 0, "abc123\n"), ("worktree add", 0, ""),
+                           ("git diff --name-only", 0, "src/hive/llm/router.py\n"),
+                           ("git ls-files --others", 0, ""),
                            ("pytest", 0, "1 passed"), ("worktree remove", 0, "")])
     pushed = []
 
@@ -262,6 +265,8 @@ def test_self_mod_refuses_protected_paths():
 
 def test_self_mod_test_failure_stays_on_last_good():
     runner = _fake_runner([("rev-parse", 0, "good\n"), ("worktree add", 0, ""),
+                           ("git diff --name-only", 0, "src/hive/x.py\n"),
+                           ("git ls-files --others", 0, ""),
                            ("pytest", 1, "FAILED test"), ("worktree remove", 0, "")])
 
     async def apply_fn(wt):

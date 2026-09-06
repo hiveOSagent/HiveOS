@@ -641,6 +641,14 @@ class HiveOS:
                         log.warning("diagnoser: unknown op %r — skipping", item.get("op"))
                         continue
                     path = item.get("path", "")
+                    if not isinstance(path, str):
+                        log.warning("diagnoser: non-string path for op %r — skipping", op.value)
+                        continue
+                    from hive.core.spec_search import validate_edit_target
+                    target_error = validate_edit_target(op, path)
+                    if target_error:
+                        log.warning("diagnoser: invalid op/path pair — %s", target_error)
+                        continue
                     old_text = item.get("old_text", "")
                     new_text = item.get("new_text", "")
 
@@ -696,21 +704,19 @@ class HiveOS:
                     # Pillar 4 safety checks (self_mod_safety.run_all_checks) only
                     # fire when target_files/code are populated — feed them here so
                     # they actually run against real proposals, not just the 50
-                    # unit tests that construct Edit() manually. `code` is scoped to
-                    # CREATE_FILE .py edits only: for PATCH_CODE etc., new_text is a
-                    # replacement FRAGMENT (see _apply above), and ast.parse-ing a
-                    # bare fragment routinely raises spurious SyntaxErrors even for
-                    # a valid patch — which would false-positive-block legitimate
-                    # patches at the critical/MANUAL tier before a human sees them.
+                    # unit tests that construct Edit() manually. Dangerous-pattern
+                    # checks inspect every replacement payload. Syntax is limited to
+                    # complete CREATE_FILE Python files: other payloads are fragments.
                     edits.append(Edit(
                         op=op,
                         summary=item.get("summary", f"auto-edit: {op.value}"),
                         rationale=item.get("rationale", ""),
                         apply=_apply,
                         target_files=[path] if path else [],
-                        code=(new_text if (op is EditOp.CREATE_FILE
-                                           and path.lower().endswith(".py") and new_text)
-                             else None),
+                        code=new_text if new_text else None,
+                        code_is_complete_file=(
+                            op is EditOp.CREATE_FILE and path.lower().endswith(".py")
+                        ),
                     ))
                 return edits
             except Exception as exc:  # noqa: BLE001

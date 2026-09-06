@@ -262,6 +262,16 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   and reuse of resources that are closing. Injected `create_app(hive)` instances release
   their lifespans without owning the shared runtime; the `hive serve` entry point explicitly
   owns and performs final runtime shutdown.
+- **M0 self-modification risk containment (issue #147):** risk tiers are derived
+  from both the typed operation and normalized target paths. Core, gateway, tool,
+  Git/workflow, and project configuration paths have a minimum `REVIEW` floor;
+  `EDIT_DOCS` rejects non-document targets. Dangerous-pattern checks scan every
+  edit payload while syntax checks are limited to complete Python files. Before
+  tests and again immediately before staging, `SelfModifier` compares the
+  callback's claimed paths with tracked and untracked Git changes, blocks hidden
+  protected changes, and prevents actual REVIEW-floor paths from using the AUTO
+  path. A human-approved REVIEW edit still follows the isolated worktree/test/PR
+  flow and cannot bypass protected-file checks.
 - **M0 inbound sender boundary (issue #150):** every enabled inbound channel has two
   checks before a model turn: platform-request authentication and an explicit owner
   allowlist. Telegram requires its Bot API webhook secret plus an allowed user or chat;

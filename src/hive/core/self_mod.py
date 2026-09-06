@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import posixpath
 import subprocess
 import time
 from pathlib import Path
@@ -103,6 +104,96 @@ def _touches_protected(changed: list[str]) -> bool:
         if basename in _PROTECTED_NAMES:
             return True
     return False
+
+
+def _normalize_changed_path(path: str) -> str:
+    """Return one normalized, repository-relative comparison form for a path."""
+    normalized = posixpath.normpath(path.replace("\\", "/"))
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+async def _actual_changed_files(run: Runner, worktree: str) -> tuple[int, list[str], str]:
+    """Read every tracked and untracked candidate change from Git.
+
+    The callback's result is only an assertion. Git is the source of truth before
+    tests, staging, committing, and pushing are allowed to proceed.
+    """
+    rc, diff_out = await run(["git", "diff", "--name-only", "--no-renames", "HEAD", "--"], worktree)
+    if rc != 0:
+        return rc, [], diff_out
+    rc, untracked_out = await run(
+        ["git", "ls-files", "--others", "--exclude-standard"], worktree,
+    )
+    if rc != 0:
+        return rc, [], untracked_out
+    changed = {
+        _normalize_changed_path(line)
+        for line in (diff_out + "\n" + untracked_out).splitlines()
+        if line.strip()
+    }
+    return 0, sorted(path for path in changed if path), ""
+
+
+def _review_required_paths(paths: list[str]) -> list[str]:
+    """Return actual paths that cannot remain on the autonomous AUTO path."""
+    # This import must stay lazy: spec_search imports SelfModifier.
+    from hive.core.spec_search import path_requires_review
+
+    return [path for path in paths if path_requires_review(path)]
+
+
+async def _verify_candidate_changes(
+    run: Runner, worktree: str, reported_changed: list[str], *, approved_review: bool,
+) -> dict:
+    """Fail closed unless Git matches the callback and policy permits the paths."""
+    if not isinstance(reported_changed, list) or any(
+        not isinstance(path, str) for path in reported_changed
+    ):
+        return {
+            "ok": False,
+            "stage": "changed_files",
+            "msg": "apply_fn must report a list of repository-relative paths",
+        }
+    rc, actual_changed, error = await _actual_changed_files(run, worktree)
+    if rc != 0:
+        return {
+            "ok": False,
+            "stage": "changed_files",
+            "msg": "unable to verify candidate worktree changes",
+            "log": error[-1000:],
+        }
+    reported_set = {_normalize_changed_path(path) for path in reported_changed}
+    actual_set = set(actual_changed)
+    if _touches_protected(actual_changed):
+        return {
+            "ok": False,
+            "stage": "protected",
+            "msg": "actual change touches SOUL.md or approval gate — human-only",
+        }
+    if reported_set != actual_set:
+        log.warning(
+            "self_mod BLOCKED: callback paths differ from Git paths; reported=%s actual=%s",
+            sorted(reported_set), actual_changed,
+        )
+        return {
+            "ok": False,
+            "stage": "changed_files",
+            "msg": "apply_fn file list does not match actual Git changes",
+            "reported": sorted(reported_set),
+            "actual": actual_changed,
+        }
+    review_paths = _review_required_paths(actual_changed)
+    if review_paths and not approved_review:
+        return {
+            "ok": False,
+            "stage": "review_required",
+            "msg": "actual change requires REVIEW tier before commit",
+            "review_paths": review_paths,
+            "changed": actual_changed,
+        }
+    return {"changed": actual_changed}
 
 
 _MAX_HISTORY = 50   # keep at most this many proposal records in memory
@@ -261,9 +352,11 @@ class SelfModifier:
         return {"removed": removed, "errors": errors}
 
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
-                      *, dry_run: bool = False) -> dict:
+                      *, dry_run: bool = False, approved_review: bool = False) -> dict:
         self._emit(EventType.SELFMOD_START, {"title": title, "dry_run": dry_run})
-        result = await self._propose_inner(title, description, apply_fn, dry_run=dry_run)
+        result = await self._propose_inner(
+            title, description, apply_fn, dry_run=dry_run, approved_review=approved_review,
+        )
         self._emit(EventType.SELFMOD_END, {
             "title": title, "ok": result.get("ok"), "stage": result.get("stage"),
             "branch": result.get("branch"), "dry_run": dry_run,
@@ -277,8 +370,15 @@ class SelfModifier:
             self._history = self._history[-_MAX_HISTORY:]
         return result
 
+    async def propose_approved(self, title: str, description: str, apply_fn: ApplyFn,
+                               *, dry_run: bool = False) -> dict:
+        """Run a human-approved REVIEW edit through the isolated modifier flow."""
+        return await self.propose(
+            title, description, apply_fn, dry_run=dry_run, approved_review=True,
+        )
+
     async def _propose_inner(self, title: str, description: str, apply_fn: ApplyFn,
-                             *, dry_run: bool = False) -> dict:
+                             *, dry_run: bool = False, approved_review: bool = False) -> dict:
         branch = f"hive/auto-{int(time.time())}"
         wt = str(Path(self._root) / ".worktrees" / branch.replace("/", "-"))
 
@@ -289,17 +389,33 @@ class SelfModifier:
         if rc != 0:
             return {"ok": False, "stage": "worktree", "log": out}
         try:
-            changed = await apply_fn(wt)
-            if _touches_protected(changed):
+            reported_changed = await apply_fn(wt)
+            if isinstance(reported_changed, list) and _touches_protected(reported_changed):
                 log.warning("self_mod BLOCKED: proposed edit touches protected files: %s",
-                            [p for p in changed if _touches_protected([p])])
+                            [p for p in reported_changed if _touches_protected([p])])
                 return {"ok": False, "stage": "protected",
                         "msg": "change touches SOUL.md or approval gate — human-only"}
+
+            verified = await _verify_candidate_changes(
+                self._run, wt, reported_changed, approved_review=approved_review,
+            )
+            if verified.get("ok") is False:
+                return verified
+            changed = verified["changed"]
 
             rc, test_out = await self._run(self._test_cmd, wt)
             if rc != 0:
                 return {"ok": False, "stage": "test", "last_good": last_good,
                         "log": test_out[-2000:], "recorded": True}
+
+            # Tests/callbacks must not add or alter paths after the initial check
+            # and before `git add -A` below.
+            verified = await _verify_candidate_changes(
+                self._run, wt, reported_changed, approved_review=approved_review,
+            )
+            if verified.get("ok") is False:
+                return verified
+            changed = verified["changed"]
 
             if dry_run:
                 return {"ok": True, "stage": "dry_run", "branch": branch,
