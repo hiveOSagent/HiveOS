@@ -626,7 +626,18 @@ def test_plaintext_keyring_fallback_is_rejected(monkeypatch):
         pass
 
     monkeypatch.setattr(keyring, "get_keyring", PlaintextKeyring)
-    with pytest.raises(credentials.CredentialStoreError, match="secure OS credential backend"):
+    with pytest.raises(credentials.CredentialStoreError, match="supported native OS credential backend"):
+        credentials._keyring()
+
+
+def test_unknown_keyring_backend_is_rejected(monkeypatch):
+    import keyring
+
+    class ThirdPartyKeyring:
+        pass
+
+    monkeypatch.setattr(keyring, "get_keyring", ThirdPartyKeyring)
+    with pytest.raises(credentials.CredentialStoreError, match="supported native OS credential backend"):
         credentials._keyring()
 
 

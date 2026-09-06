@@ -21,6 +21,12 @@ from hive.core.redact import register_secret_values
 log = logging.getLogger("hive.credentials")
 _MANIFEST_VERSION = 2
 _SERVICE_PREFIX = "HiveOS.credentials"
+_NATIVE_KEYRING_MODULE_PREFIXES = (
+    "keyring.backends.windows",
+    "keyring.backends.macos",
+    "keyring.backends.secretservice",
+    "keyring.backends.kwallet",
+)
 
 
 class CredentialStoreError(RuntimeError):
@@ -47,13 +53,9 @@ def _keyring() -> Any:
         raise CredentialStoreError("keyring dependency is unavailable") from exc
     backend = keyring.get_keyring()
     backend_module = type(backend).__module__.casefold()
-    backend_name = type(backend).__name__.casefold()
-    if (
-        backend_module.startswith(("keyring.backends.fail", "keyrings.alt"))
-        or "plaintext" in backend_name
-    ):
+    if not backend_module.startswith(_NATIVE_KEYRING_MODULE_PREFIXES):
         raise CredentialStoreError(
-            "no secure OS credential backend is configured; refusing plaintext credential storage"
+            "no supported native OS credential backend is configured; refusing credential storage"
         )
     return keyring
 

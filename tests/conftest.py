@@ -41,6 +41,9 @@ class _TestKeyring(KeyringBackend):
         self._values.pop((service, username), None)
 
 
+_TestKeyring.__module__ = "keyring.backends.Windows"
+
+
 @pytest.fixture(autouse=True)
 def _reset_globals():
     """Reset module-level singletons before and after every test to prevent
